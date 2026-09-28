@@ -1,6 +1,7 @@
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+extend-include = ["*.ipynb"]
 
 [tool.ruff.lint]
 # On garde uniquement les erreurs de syntaxe, de bugs potentiels et le tri des imports

@@ -12,6 +12,9 @@ dependencies:
   - xgboost
   - scikit-learn
   - shap
+  - matplotlib
+  - jupyterlab
+  - ipywidgets
   - pip
   - pip:
       - fastapi
@@ -19,3 +22,5 @@ dependencies:
       - pydantic
       - python-dotenv
       - psycopg2-binary
+      - evidently
+      - ruff
