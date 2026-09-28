@@ -38,20 +38,14 @@ logging.basicConfig(
 )
 
 
-def build_pharma_dataset(
-    days: int = 1095, num_products: int = 10, seed: int = 42
-) -> pd.DataFrame:
+def build_pharma_dataset(days: int = 1095, num_products: int = 10, seed: int = 42) -> pd.DataFrame:
     """Generate 3 years of historical daily demand and stock levels."""
     np.random.seed(seed)
     end_date = datetime.now()
     start_date = end_date - timedelta(days=days)
 
-    dates = [
-        start_date + timedelta(days=d) for d in range(days)
-    ]
-    products = [
-        f"MED_{i + 1:03d}" for i in range(num_products)
-    ]
+    dates = [start_date + timedelta(days=d) for d in range(days)]
+    products = [f"MED_{i + 1:03d}" for i in range(num_products)]
 
     rows = []
 
@@ -61,18 +55,12 @@ def build_pharma_dataset(
 
         for day_idx, current_date in enumerate(dates):
             # 1. Trend & Seasonality
-            annual_trend = 1.0 + (
-                0.04 * (day_idx / 365)
-            )  # +4% growth per year
+            annual_trend = 1.0 + (0.04 * (day_idx / 365))  # +4% growth per year
 
             is_winter = current_date.month in [11, 12, 1, 2]
             is_spring = current_date.month in [3, 4, 5]
 
-            seasonality = (
-                1.30
-                if is_winter
-                else (1.15 if is_spring else 1.0)
-            )
+            seasonality = 1.30 if is_winter else (1.15 if is_spring else 1.0)
 
             # Weekend effect (lower order volumes)
             is_weekend = current_date.weekday() >= 5
@@ -80,10 +68,7 @@ def build_pharma_dataset(
 
             # Compute true target demand
             raw_demand = (
-                np.random.normal(base_demand, 10)
-                * seasonality
-                * weekend_scale
-                * annual_trend
+                np.random.normal(base_demand, 10) * seasonality * weekend_scale * annual_trend
             )
             demand = max(0, int(raw_demand))
 
@@ -102,15 +87,11 @@ def build_pharma_dataset(
 
             # Automatic replenishment trigger
             if current_stock < 300:
-                current_stock += np.random.randint(
-                    500, 1200
-                )
+                current_stock += np.random.randint(500, 1200)
 
             rows.append(
                 {
-                    "date": current_date.strftime(
-                        "%Y-%m-%d"
-                    ),
+                    "date": current_date.strftime("%Y-%m-%d"),
                     "product_id": product,
                     "target_demand": demand,
                     "sales_volume": fulfilled_sales,
@@ -124,19 +105,13 @@ def build_pharma_dataset(
 
 
 if __name__ == "__main__":
-    logging.info(
-        "Generating 3-year synthetic pharmaceutical dataset..."
-    )
+    logging.info("Generating 3-year synthetic pharmaceutical dataset...")
     df_pharma = build_pharma_dataset()
 
     output_dir = Path("data")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    output_file = (
-        output_dir / "pharmaceutical_demand_row.csv"
-    )
+    output_file = output_dir / "pharmaceutical_demand_row.csv"
     df_pharma.to_csv(output_file, index=False)
 
-    logging.info(
-        f"Dataset generated successfully ({len(df_pharma)} rows) -> {output_file}"
-    )
+    logging.info(f"Dataset generated successfully ({len(df_pharma)} rows) -> {output_file}")

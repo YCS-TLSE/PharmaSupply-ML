@@ -57,9 +57,7 @@ logging.basicConfig(
 
 # Extract database credentials from environment variables
 DB_USER = os.getenv("POSTGRES_USER", "ycs_admin")
-DB_PASSWORD = os.getenv(
-    "POSTGRES_PASSWORD", "ycs_admin_secure_password"
-)
+DB_PASSWORD = os.getenv("POSTGRES_PASSWORD", "ycs_admin_secure_password")
 DB_HOST = os.getenv("POSTGRES_HOST", "localhost")
 DB_PORT = os.getenv("POSTGRES_PORT", "5432")
 DB_NAME = os.getenv("POSTGRES_DB", "pharmasupply_db")
@@ -76,9 +74,7 @@ def load_data_from_db() -> pd.DataFrame:
     engine = create_engine(DATABASE_URL)
     query = "SELECT * FROM raw_pharmaceutical_demand ORDER BY date ASC;"
 
-    logging.info(
-        "Fetching raw data from PostgreSQL database..."
-    )
+    logging.info("Fetching raw data from PostgreSQL database...")
     df = pd.read_sql(query, engine)
 
     # Cast date column to explicit datetime objects for temporal processing
@@ -95,14 +91,10 @@ def create_features(df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         pd.DataFrame: Enriched dataset containing lag features and target variables.
     """
-    logging.info(
-        "Engineering dynamic features (calendar, lags, rolling statistics)..."
-    )
+    logging.info("Engineering dynamic features (calendar, lags, rolling statistics)...")
 
     # Ensure strict sorting by product and time before calculating rolling stats
-    df = df.sort_values(["product_id", "date"]).reset_index(
-        drop=True
-    )
+    df = df.sort_values(["product_id", "date"]).reset_index(drop=True)
 
     # --- 1. Calendar Features ---
     # Extract seasonal patterns directly from the date object
@@ -113,29 +105,19 @@ def create_features(df: pd.DataFrame) -> pd.DataFrame:
     # --- 2. Censored Demand Reconstruction ---
     # When a stockout occurs (is_stockout = 1), sales_volume drops to 0 or stock limit.
     # We replace stockout sales with NaN to avoid propagating false "zero-demand" into lags.
-    df["demand_signal"] = np.where(
-        df["is_stockout"] == 1, np.nan, df["sales_volume"]
-    )
+    df["demand_signal"] = np.where(df["is_stockout"] == 1, np.nan, df["sales_volume"])
 
     # Impute missing demand signals during stockouts via forward/backward filling per product
-    df["demand_signal"] = (
-        df.groupby("product_id")["demand_signal"]
-        .ffill()
-        .bfill()
-    )
+    df["demand_signal"] = df.groupby("product_id")["demand_signal"].ffill().bfill()
 
     # --- 3. Lag and Rolling Window Features ---
     # Create historical lags (7, 14, and 30 days) per product group
     for lag in [7, 14, 30]:
-        df[f"lag_{lag}"] = df.groupby("product_id")[
-            "demand_signal"
-        ].shift(lag)
+        df[f"lag_{lag}"] = df.groupby("product_id")["demand_signal"].shift(lag)
 
     # Create rolling averages over past 7 and 30 days (shift by 1 to prevent data leakage)
     for window in [7, 30]:
-        df[f"rolling_mean_{window}"] = df.groupby(
-            "product_id"
-        )["demand_signal"].transform(
+        df[f"rolling_mean_{window}"] = df.groupby("product_id")["demand_signal"].transform(
             lambda x: x.shift(1).rolling(window).mean()
         )
 
@@ -208,11 +190,7 @@ def train_xgboost(df: pd.DataFrame) -> None:
     rmse = np.sqrt(np.mean((y_test - predictions) ** 2))
 
     # Weighted Absolute Percentage Error (Standard metric in Supply Chain Forecasting)
-    wmape = (
-        np.sum(np.abs(y_test - predictions))
-        / np.sum(y_test)
-        * 100
-    )
+    wmape = np.sum(np.abs(y_test - predictions)) / np.sum(y_test) * 100
 
     logging.info("--- Model Evaluation Results ---")
     logging.info(f"MAE:   {mae:.2f}")
@@ -225,9 +203,7 @@ def train_xgboost(df: pd.DataFrame) -> None:
     model_path = models_dir / "xgboost_pharma_demand.joblib"
 
     joblib.dump(model, model_path)
-    logging.info(
-        f"Model artifact saved successfully -> {model_path}"
-    )
+    logging.info(f"Model artifact saved successfully -> {model_path}")
 
 
 if __name__ == "__main__":

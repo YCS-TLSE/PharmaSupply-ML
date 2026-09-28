@@ -17,9 +17,7 @@ load_dotenv()
 
 # Build PostgreSQL connection URL from environment variables
 DB_USER = os.getenv("POSTGRES_USER", "ycs_admin")
-DB_PASSWORD = os.getenv(
-    "POSTGRES_PASSWORD", "ycs_admin_secure_password"
-)
+DB_PASSWORD = os.getenv("POSTGRES_PASSWORD", "ycs_admin_secure_password")
 DB_HOST = os.getenv("POSTGRES_HOST", "localhost")
 DB_PORT = os.getenv("POSTGRES_PORT", "5432")
 DB_NAME = os.getenv("POSTGRES_DB", "pharmasupply_db")
@@ -40,9 +38,7 @@ def run_validation():
         AssertionError: If any data quality check fails.
     """
     engine = create_engine(DB_URL)
-    df = pd.read_sql(
-        "SELECT * FROM raw_pharmaceutical_demand", engine
-    )
+    df = pd.read_sql("SELECT * FROM raw_pharmaceutical_demand", engine)
 
     print(f"🔍 Validating {len(df)} rows...")
 
@@ -58,17 +54,11 @@ def run_validation():
         "stock_on_hand",
     ]
     null_counts = df[required_cols].isnull().sum().sum()
-    assert null_counts == 0, (
-        f"Found {null_counts} null values!"
-    )
+    assert null_counts == 0, f"Found {null_counts} null values!"
 
     # 3. Check for invalid negative values
-    assert (df["target_demand"] >= 0).all(), (
-        "Found negative target_demand values!"
-    )
-    assert (df["stock_on_hand"] >= 0).all(), (
-        "Found negative stock_on_hand values!"
-    )
+    assert (df["target_demand"] >= 0).all(), "Found negative target_demand values!"
+    assert (df["stock_on_hand"] >= 0).all(), "Found negative stock_on_hand values!"
 
     print("✅ All data quality checks passed successfully!")
 
