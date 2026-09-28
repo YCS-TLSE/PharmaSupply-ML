@@ -128,7 +128,7 @@ streamlit run src/streamlit.py
 * [x] **`02_DATA_INFRASTRUCTURE_AND_INGESTION.md` — Ingestion & Persistance :** Base PostgreSQL conteneurisée et pipeline d'ingestion idempotent (`src/ingestion.py`).
 * [x] **`03_OPS_GUARDRUILS_DATA_QUALITY_AND_CLEANING.md` — Garde-fous Ops :** Validation automatique des schémas, assertions et nettoyage métier (`src/validation.py`).
 * [x] **`04_ML_PIPELINE_PREPROCESSING_FEATURE_ENGINEERING.md` — Pipeline ML :** Ingestion des lags/moyennes glissantes, découpage temporel et XGBoost (`src/train.py`).
-* [ ] **`05_EXPLAINABILITY_AND_MONITORING.md` — Explicabilité & Monitoring :** Valeurs SHAP et suivi du Data Drift avec Evidently (`src/explain.py`).
+* [x] **`05_EXPLAINABILITY_AND_MONITORING.md` — Explicabilité & Monitoring :** Valeurs SHAP et suivi du Data Drift avec Evidently (`src/explain.py`).
 * [ ] **`06_REST_API_SERVING.md` — Serving REST API :** FastAPI, validation Pydantic, gestion du cycle de vie et routes d'inférence (`src/api.py`).
 * [ ] **`07_DECISION_DASHBOARD_AND_USER_INTERFACE.md` — Interface Décisionnelle :** Tableau de bord Streamlit connecté à l'API (`src/streamlit.py`).
 
@@ -253,7 +253,7 @@ streamlit run src/streamlit.py
 * [x] **`02_DATA_INFRASTRUCTURE_AND_INGESTION.md` — Ingestion & Persistence:** Containerized PostgreSQL database and idempotent ingestion pipeline (`src/ingestion.py`).
 * [x] **`03_OPS_GUARDRUILS_DATA_QUALITY_AND_CLEANING.md` — Ops Guardrails:** Automated schema validation, data quality assertions, and business cleaning (`src/validation.py`).
 * [x] **`04_ML_PIPELINE_PREPROCESSING_FEATURE_ENGINEERING.md` — ML Pipeline:** Lags/rolling features, temporal train/test split, and XGBoost training (`src/train.py`).
-* [ ] **`05_EXPLAINABILITY_AND_MONITORING.md` — Explainability & Monitoring:** SHAP values integration and Data Drift tracking via Evidently (`src/explain.py`).
+* [x] **`05_EXPLAINABILITY_AND_MONITORING.md` — Explainability & Monitoring:** SHAP values integration and Data Drift tracking via Evidently (`src/explain.py`).
 * [ ] **`06_REST_API_SERVING.md` — REST API Serving:** FastAPI, Pydantic validation schemas, lifespan management, and inference endpoints (`src/api.py`).
 * [ ] **`07_DECISION_DASHBOARD_AND_USER_INTERFACE.md` — Decision Dashboard:** Streamlit user interface connected to the REST API (`src/streamlit.py`).
 
