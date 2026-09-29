@@ -32,6 +32,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import shap
+from dotenv import load_dotenv
 
 
 class ModelExplainer:
@@ -112,14 +113,15 @@ class ModelExplainer:
                     f"Running {n_repeats}-pass aggregated SHAP calculation (sample_size={sample_size})..."
                 )
                 shap_accumulated = []
-                X_eval = X_sample.sample(
-                    n=sample_size, random_state=42
-                )
+                X_eval = None
 
                 for i in range(n_repeats):
                     X_sub = X_sample.sample(
                         n=sample_size, random_state=42 + i
                     )
+                    if i == 0:
+                        X_eval = X_sub  # Keep reference sample for evaluation matrix
+
                     shap_accumulated.append(
                         self.explainer(X_sub).values
                     )
@@ -151,11 +153,14 @@ class ModelExplainer:
 
         self.X_sample = X_eval
 
-    def generate_global_plots(self):
+    def generate_global_plots(self, max_display: int = 10):
         """
         Generate and save global explainability plots:
         1. Summary Beeswarm plot: Distribution of feature impacts across observations.
         2. Bar plot: Global ranking of mean absolute SHAP feature importance.
+
+        Parameters:
+            max_display (int): Top features to display to avoid graphical noise (default: 10).
         """
         if (
             self.explainer is None
@@ -167,7 +172,11 @@ class ModelExplainer:
 
         # 1. Beeswarm Plot (Feature impact distribution and directionality)
         plt.figure(figsize=(10, 6))
-        shap.plots.beeswarm(self.shap_values, show=False)
+        shap.plots.beeswarm(
+            self.shap_values,
+            max_display=max_display,
+            show=False,
+        )
         beeswarm_path = (
             self.output_dir / "shap_summary_beeswarm.png"
         )
@@ -177,7 +186,11 @@ class ModelExplainer:
 
         # 2. Bar Plot (Mean global feature importance ranking)
         plt.figure(figsize=(10, 6))
-        shap.plots.bar(self.shap_values, show=False)
+        shap.plots.bar(
+            self.shap_values,
+            max_display=max_display,
+            show=False,
+        )
         bar_path = self.output_dir / "shap_summary_bar.png"
         plt.tight_layout()
         plt.savefig(bar_path, dpi=300)
@@ -187,16 +200,18 @@ class ModelExplainer:
             f"[OK] Global SHAP plots successfully saved to: {self.output_dir}"
         )
 
-    def generate_local_waterfall(
+    def generate_local_breakdown(
         self,
         sample_index: int = 0,
-        filename: str = "shap_waterfall_single.png",
+        max_display: int = 10,
+        filename: str = "shap_individual_breakdown.png",
     ):
         """
-        Generate and save a Waterfall plot explaining an individual prediction instance.
+        Generate and save an Individual Breakdown Bar Plot explaining a single prediction instance.
 
         Parameters:
             sample_index (int): Row index in the target matrix to explain.
+            max_display (int): Top features to display for the breakdown (default: 10).
             filename (str): Output filename for the generated plot artifact.
         """
         if (
@@ -207,45 +222,125 @@ class ModelExplainer:
                 "Explainer is not initialized. Run fit_explainer() first."
             )
 
-        # Local Waterfall plot: Deconstructs base value E[f(x)] to final prediction f(x)
-        plt.figure(figsize=(8, 6))
-        shap.plots.waterfall(
-            self.shap_values[sample_index], show=False
+        # Local Breakdown Bar plot: Deconstructs base value E[f(x)] to final prediction f(x)
+        plt.figure(figsize=(10, 6))
+        shap.plots.bar(
+            self.shap_values[sample_index],
+            max_display=max_display,
+            show=False,
         )
-        waterfall_path = self.output_dir / filename
+
+        # Calculate f(x) and baseline for detailed title annotation
+        f_x = self.shap_values[
+            sample_index
+        ].base_values + np.sum(
+            self.shap_values[sample_index].values
+        )
+        baseline = self.shap_values[
+            sample_index
+        ].base_values
+
+        plt.title(
+            f"Individual Demand Prediction Breakdown (f(x) = {f_x:.2f} units)\n"
+            f"Baseline E[f(X)] = {baseline:.2f} units",
+            fontsize=11,
+        )
+
+        breakdown_path = self.output_dir / filename
         plt.tight_layout()
-        plt.savefig(waterfall_path, dpi=300)
+        plt.savefig(breakdown_path, dpi=300)
         plt.close()
 
         print(
-            f"[OK] Local explanation plot (index {sample_index}) saved to: {waterfall_path}"
+            f"[OK] Local explanation plot (index {sample_index}) saved to: {breakdown_path}"
         )
+
+    def export_shap_to_csv(
+        self, filename: str = "shap_values.csv"
+    ):
+        """
+        Export the computed SHAP values matrix as a CSV file for downstream usage.
+
+        Parameters:
+            filename (str): Target CSV filename in the output directory.
+        """
+        if (
+            self.shap_values is None
+            or self.X_sample is None
+        ):
+            raise ValueError(
+                "No SHAP values computed. Run fit_explainer() first."
+            )
+
+        df_shap = pd.DataFrame(
+            self.shap_values.values,
+            columns=self.X_sample.columns,
+            index=self.X_sample.index,
+        )
+        csv_path = self.output_dir / filename
+        df_shap.to_csv(csv_path)
+        print(f"[OK] SHAP matrix exported to: {csv_path}")
 
 
 if __name__ == "__main__":
-    # Standalone execution for module verification and reporting artifact generation
-    from src.validation import load_and_validate_data
+    load_dotenv()
 
-    # Load and validate source dataset
-    df = load_and_validate_data(
-        "data/pharmaceutical_demand_row.csv"
+    # 1. Chargement des données brutes
+    data_path = "data/pharmaceutical_demand_row.csv"
+    df = pd.read_csv(data_path)
+
+    # 2. Feature Engineering à la volée (calcul des colonnes requises par XGBoost)
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"])
+        df["month"] = df["date"].dt.month
+        df["dayofweek"] = df["date"].dt.dayofweek
+        df["is_weekend"] = (
+            df["dayofweek"].isin([5, 6]).astype(int)
+        )
+
+    # Identification de la colonne cible (target)
+    target_col = (
+        "target_demand"
+        if "target_demand" in df.columns
+        else "demand"
     )
 
-    # Separate feature matrix from target variable and non-predictive metadata
-    X = df.drop(
-        columns=["demand_quantity", "date"], errors="ignore"
-    )
+    if target_col in df.columns:
+        df["lag_7"] = df[target_col].shift(7)
+        df["lag_14"] = df[target_col].shift(14)
+        df["lag_30"] = df[target_col].shift(30)
+        df["rolling_mean_7"] = (
+            df[target_col].shift(1).rolling(7).mean()
+        )
+        df["rolling_mean_30"] = (
+            df[target_col].shift(1).rolling(30).mean()
+        )
 
-    # Instantiate explainer pipeline wrapper
+    # Nettoyage des lignes avec des valeurs manquantes dues aux décalages (lags)
+    df = df.dropna().reset_index(drop=True)
+
+    # 3. Initialisation de l'explainer et alignement des colonnes
     explainer = ModelExplainer(
         model_path="models/xgboost_pharma_demand.joblib"
     )
 
-    # Execute fit: Default single-pass mode (n_repeats=1). Switch to n_repeats=5 for audit mode.
+    if hasattr(explainer.model, "feature_names_in_"):
+        expected_features = list(
+            explainer.model.feature_names_in_
+        )
+        X = df[expected_features]
+    else:
+        X = df.drop(
+            columns=[target_col, "date", "product_id"],
+            errors="ignore",
+        ).select_dtypes(include=[np.number])
+
+    # 4. Calcul des valeurs SHAP et génération des artefacts
     explainer.fit_explainer(
         X, threshold=300, sample_size=200, n_repeats=1
     )
-
-    # Generate global summary and local instance explanation figures
-    explainer.generate_global_plots()
-    explainer.generate_local_waterfall(sample_index=0)
+    explainer.generate_global_plots(max_display=10)
+    explainer.generate_local_breakdown(
+        sample_index=0, max_display=10
+    )
+    explainer.export_shap_to_csv()

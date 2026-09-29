@@ -24,3 +24,4 @@ dependencies:
       - psycopg2-binary
       - evidently
       - ruff
+      - psycopg2-binary
