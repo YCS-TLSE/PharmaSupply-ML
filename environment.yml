@@ -21,7 +21,7 @@ dependencies:
       - uvicorn
       - pydantic
       - python-dotenv
-      - psycopg2-binary
       - evidently
       - ruff
-      - psycopg2-binary
+      - "psycopg[binary]"
+      

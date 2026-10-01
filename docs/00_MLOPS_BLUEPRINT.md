@@ -23,7 +23,33 @@
 
 ---
 
-## Les 7 Phases du Framework MLOps
+# Cadre Méthodologique MLOps
+
+## 1. Vue d'Ensemble Macro : Piliers & Maturité MLOps
+
+### A. Les 3 Piliers Fonctionnels du MLOps
+Sur le plan architectural, tout système MLOps repose sur l'isolement de 3 piliers :
+
+```text
++--------------------+      +--------------------+      +--------------------+
+|  DATA ENGINEERING  | ---> | MODEL ENGINEERING  | ---> |    OPERATIONS &    |
+|  (Ingestion, Data  |      | (Training, SHAP,   |      |     GOVERNANCE     |
+|  Quality, Features)|      |   Serialization)   |      |  (API & Monitoring)|
++--------------------+      +--------------------+      +--------------------+
+```
+
+### B. Niveaux de Maturité (MLOps Maturity Levels)
+* **Level 0 (Manuel) :** Expérimentation pure dans des notebooks.
+* **Level 1 (Pipeline Automatisé) :** [Cible de notre projet] Code modularisé (`src/`), artefacts traçables, validation automatique des données et monitoring du drift.
+* **Level 2 (Continuous Training - CI/CD) :** Réentraînement automatique du modèle déclenché par alerte de drift.
+
+---
+
+## 2. Déclinaison Opérationnelle : Les 7 Phases du Projet
+
+*(Rappel : La Phase 05 fait la jonction entre le Model Engineering [Explicabilité] et les Opérations [Monitoring] pour valider la transparence du modèle avant son exposition en API REST).*
+
+
 
 ### 1. Initialization & Scoping
 * **Objectif :** Poser les bases de l'infrastructure logicielle, du contrôle de version et de l'environnement de développement.
@@ -108,7 +134,35 @@ EOF
 
 ---
 
-## The 7 MLOps Framework Phases
+
+# MLOps Methodological Framework
+
+## 1. Macro Overview: MLOps Pillars & Maturity Levels
+
+### A. The 3 Functional Pillars of MLOps
+Architecturally, every MLOps system relies on the isolation of three core pillars:
+
+```text
++--------------------+      +--------------------+      +--------------------+
+|  DATA ENGINEERING  | ---> | MODEL ENGINEERING  | ---> |    OPERATIONS &    |
+|  (Ingestion, Data  |      | (Training, SHAP,   |      |     GOVERNANCE     |
+|  Quality, Features)|      |   Serialization)   |      |  (API & Monitoring)|
++--------------------+      +--------------------+      +--------------------+
+```
+
+### B. MLOps Maturity Levels
+* **Level 0 (Manual):** Pure experimentation within notebooks.
+* **Level 1 (Automated Pipeline):** [Project Target] Modular code (`src/`), traceable artifacts, automated data validation, and drift monitoring.
+* **Level 2 (Continuous Training - CI/CD):** Automated model retraining triggered by drift alerts.
+
+---
+
+## 2. Operational Breakdown: The 7 Project Phases
+
+*(Note: Phase 05 bridges Model Engineering [Explainability] and Operations [Monitoring] to validate model transparency prior to REST API deployment).*
+
+
+
 
 ### 1. Initialization & Scoping
 * **Objective:** Establish core software infrastructure, version control, and development environment.

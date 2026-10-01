@@ -123,11 +123,52 @@ Le module débute par une documentation claire exposant les deux arbitrages MLOp
 
 ---
 
-### C. Standardisation pour `src/monitoring.py` (Evidently AI)
-* **Stratégie de Data Drift pondérée :**
-  * **Seuils stricts (Alerte critique) :** Appliqués en priorité sur les variables identifiées comme majeures par SHAP. Toute dérive statistique sur ces variables remet en cause la fiabilité des prédictions.
-  * **Seuils tolérants (Alerte secondaire) :** Appliqués sur les variables à faible poids SHAP afin d'éviter les fausses alertes opérationnelles.
-* **Suivi de la dérive de prédiction (*Prediction Drift*) :** Surveillance de la distribution des sorties du modèle par rapport à la distribution de référence pour détecter tout glissement du comportement global.
+### C. Anatomie et Explication Détaillée du Script `src/monitoring.py`
+
+Le module `src/monitoring.py` assure le contrôle continu de la santé statistique des données et des prédictions. Conçu pour s'exécuter aussi bien de manière autonome (CLI / Tâches CRON) que dans un pipeline d'orchestration global MLOps, il repose sur la bibliothèque **Evidently AI (v0.6+)**.
+
+Voici l'analyse détaillée de ses composants et de sa logique de fonctionnement :
+
+#### 1. Configuration des Colonnes (`FEATURE_COLS` & `TARGET_COL`)
+* **Rôle :** Isole précisément le périmètre d'analyse pour Evidently AI.
+* **Fonctionnement :** Définit la liste exacte des 10 variables explicatives (*features*) et de la variable cible (`target_demand`). Cela garantit que les métadonnées non pertinentes (comme les identifiants bruts ou clés primaires) ne viennent pas perturber le calcul des tests statistiques.
+
+#### 2. Architecture Double Mode (In-Memory vs Database Fallback)
+* **Rôle :** Garantit la polyvalence du module entre l'exécution autonome et l'orchestration.
+* **Fonctionnement :**
+  ```python
+  if df is None:
+      logging.info(
+          "Loading dataset for monitoring from PostgreSQL..."
+      )
+      df_raw = load_data_from_db()
+      df = create_features(df_raw)
+  ```
+  * **Mode Pipeline Orchestré :** La fonction `run_drift_monitoring(df=...)` reçoit directement le `DataFrame` pré-transformé en mémoire depuis l'orchestrateur. Aucune requête BDD inutile n'est exécutée.
+  * **Mode Standalone (CLI) :** Si `df` vaut `None`, le script bascule automatiquement sur la base de données PostgreSQL via `load_data_from_db()` et recalcule les variables dynamiques avec `create_features()`.
+
+#### 3. Stratégie de Split Temporel (Reference vs Current)
+* **Rôle :** Reconstitue une séparation temporelle réaliste entre le passé (données d'entraînement) et le présent (données récentes en production).
+* **Fonctionnement :** 
+  * Extrait la liste ordonnée des dates uniques (`df["date"]`).
+  * Applique un découpage temporel **80% / 20%** : les 80% les plus anciens forment le jeu de **Référence** (*Baseline*), et les 20% les plus récents forment le jeu **Actuel** (*Current*).
+
+#### 4. Calcul du Drift avec Evidently AI (`Report` & `DataDriftPreset`)
+* **Rôle :** Applique les tests statistiques appropriés selon le type de variable (numérique vs catégorielle).
+* **Fonctionnement :**
+  ```python
+  report = Report([DataDriftPreset()])
+  my_eval = report.run(current_df, reference_df)
+  ```
+  * Instancie le preset `DataDriftPreset()` compatible avec l'API v0.6+.
+  * Compare la distribution de `current_df` par rapport à `reference_df`.
+  * Utilise automatiquement les tests adaptés (ex: *Wasserstein distance* pour les variables numériques comme `rolling_mean_7`, *Jensen-Shannon distance* pour les variables catégorielles comme `month`).
+
+#### 5. Exportation et Persistance du Rapport HTML
+* **Rôle :** Génère l'artefact visuel d'auditabilité pour les équipes Data et Métier.
+* **Fonctionnement :**
+  * S'assure de l'existence du dossier de destination (`reports/`).
+  * Utilise l'API de sauvegarde de l'évaluation (`my_eval.save_html()`) pour produire un rapport HTML interactif complet sans dépendances externes (`reports/drift_report.html`).
 
 ---
 
@@ -260,11 +301,52 @@ The module opens with clear documentation outlining two key MLOps trade-offs:
 
 ---
 
-### C. Standardization for `src/monitoring.py` (Evidently AI)
-* **Weighted Data Drift Strategy:**
-  * **Strict Thresholds (Critical Alerts):** Applied primarily to top SHAP features. Statistical drift on these features invalidates model reliability.
-  * **Tolerant Thresholds (Secondary Alerts):** Applied to low SHAP impact features to prevent operational false alarms.
-* **Prediction Drift Tracking:** Monitors overall model output distributions against baseline runs to spot macro-level prediction shifts.
+### C. Anatomy and Detailed Explanation of `src/monitoring.py`  
+
+The `src/monitoring.py` module ensures continuous control over the statistical health of input data and model outputs. Designed to execute both standalone (CLI / CRON jobs) and within a master MLOps pipeline, it relies on the **Evidently AI (v0.6+)** framework.
+
+Here is the detailed breakdown of its components and operating logic:
+
+#### 1. Column Definition (`FEATURE_COLS` & `TARGET_COL`)
+* **Role:** Strictly isolates the analysis scope for Evidently AI.
+* **How it works:** Explicitly lists the 10 feature variables and the target column (`target_demand`). This prevents non-predictive metadata (such as primary keys or raw timestamps) from diluting statistical drift scoring.
+
+#### 2. Dual-Mode Architecture (In-Memory vs Database Fallback)
+* **Role:** Guarantees module versatility across standalone execution and pipeline orchestration.
+* **How it works:**
+  ```python
+  if df is None:
+      logging.info(
+          "Loading dataset for monitoring from PostgreSQL..."
+      )
+      df_raw = load_data_from_db()
+      df = create_features(df_raw)
+  ```
+  * **Orchestrated Pipeline Mode:** The `run_drift_monitoring(df=...)` function receives a pre-transformed in-memory `DataFrame` directly from the master orchestrator, bypassing database calls.
+  * **Standalone Mode (CLI):** If `df` is `None`, the script automatically falls back to querying the PostgreSQL database via `load_data_from_db()` and generating features using `create_features()`.
+
+#### 3. Temporal Split Strategy (Reference vs Current)
+* **Role:** Recreates a realistic time-based separation between baseline training data and recent production data.
+* **How it works:**
+  * Extracts sorted unique timestamps (`df["date"]`).
+  * Applies an **80/20 time split**: the oldest 80% constitutes the **Reference** dataset, while the most recent 20% constitutes the **Current** evaluation dataset.
+
+#### 4. Drift Calculation via Evidently AI (`Report` & `DataDriftPreset`)
+* **Role:** Runs appropriate statistical tests depending on variable data types (numerical vs categorical).
+* **How it works:**
+  ```python
+  report = Report([DataDriftPreset()])
+  my_eval = report.run(current_df, reference_df)
+  ```
+  * Instantiates `DataDriftPreset()` compliant with Evidently v0.6+ API standards.
+  * Evaluates distribution shifts between `current_df` and `reference_df`.
+  * Automatically selects optimal statistical tests (e.g., *Wasserstein distance* for numerical features like `rolling_mean_7`, *Jensen-Shannon distance* for categorical features like `month`).
+
+#### 5. Export & Report Persistence
+* **Role:** Generates an auditable visual artifact for Data and Business stakeholders.
+* **How it works:**
+  * Guarantees target directory existence (`reports/`).
+  * Calls the evaluation object's native export method (`my_eval.save_html()`) to output a self-contained, interactive HTML dashboard (`reports/drift_report.html`).
 
 ---
 
