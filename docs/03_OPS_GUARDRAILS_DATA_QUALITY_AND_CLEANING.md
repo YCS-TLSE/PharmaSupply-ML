@@ -65,7 +65,8 @@ python src/validation.py
 
 ---
 
-### [EN] English Version
+<details>
+<summary>🇬🇧 <b>English Version (Click to expand)</b></summary>
 
 ### *This document details the data quality strategy, operational guardrails (Ops Guardrails), and the execution of the validation module (`src/validation.py`).*
 
@@ -117,3 +118,5 @@ python src/validation.py
 
 * **Status:** Validated. Raw records strictly adhere to operational guardrails.
 * **Next Step:** Proceed to **Phase 4: ML Pipeline, Preprocessing & Feature Engineering**.
+
+</details>

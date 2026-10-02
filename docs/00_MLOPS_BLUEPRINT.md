@@ -1,5 +1,5 @@
-# Technical Documentation
-## Blueprint: From ML Notebook to MLOps  
+# Technical Documentation  
+## Blueprint: From ML Notebook to MLOps   
 **Project:** PharmaSupply-ML (Standard MLOps Framework)  
 **File:** `docs/00_MLOPS_BLUEPRINT.md`  
 **Status:** Reference Architecture  
@@ -52,27 +52,28 @@ Sur le plan architectural, tout système MLOps repose sur l'isolement de 3 pilie
 
 
 ### 1. Initialization & Scoping
-* **Objectif :** Poser les bases de l'infrastructure logicielle, du contrôle de version et de l'environnement de développement.
+* **Objectif :** Poser les bases de l'infrastructure logicielle, du contrôle de version et de l'environnement de développement sur un socle **Linux natif / WSL2**.
 * **Livrables :**
   * Structure standard de dépôt Git (`src/`, `data/`, `models/`, `reports/`, `notebooks/`, `docs/`).
-  * Fichier de configuration d'environnement déclaratif (`environment.yml` ou `requirements.txt`).
+  * Environnement d'exécution conteneurisé (Docker Engine natif sous Linux / WSL2 géré via `systemd`).
+  * Fichier de configuration d'environnement déclaratif (`requirements.txt`).
   * Fichier `.gitignore` adapté aux données brutes, identifiants et artefacts de modèles.
 
 ---
 
 ### 2. Data Infrastructure & Ingestion
-* **Objectif :** Garantir un accès fiable, reproductible et idempotent aux données sources.
+* **Objectif :** Garantir un accès fiable, reproductible et idempotent aux données sources via des services conteneurisés standard.
 * **Livrables :**
-  * **Option Standard (Entreprise) :** Service de base de données conteneurisé (ex: `docker-compose.yml` avec PostgreSQL, MySQL, etc.).
-  * **Option Légère (POC / Fichiers) :** Module d'accès aux fichiers plats (`.csv`, `.parquet`) sur un stockage local ou Cloud (S3, GCS).
-  * Module d'ingestion automatisé (`src/ingestion.py` ou `src/data_loader.py`).
+  * **Option Standard (Entreprise) :** Service de base de données PostgreSQL conteneurisé et orchestré par **`docker compose`** standard (sans wrapper interactif).
+  * **Option Légère (POC / Fichiers) :** Module d'accès aux fichiers plats (`.csv`, `.parquet`) sur un stockage local.
+  * Module d'ingestion automatisé (`src/ingestion.py`).
 
 ---
 
 ### 3. Ops Guardrails, Data Quality & Cleaning
 * **Objectif :** Valider l'intégrité technique des données brutes et effectuer un nettoyage de surface avant tout traitement analytique.
 * **Livrables :**
-  * Pipeline de validation et nettoyage automatisé (`src/validation.py` ou `src/cleaning.py`).
+  * Pipeline de validation et nettoyage automatisé (`src/validation.py`).
   * Contrôle des schémas et types de données.
   * Gestion des doublons, suppression/imputation d'urgence des valeurs manquantes et filtrage des valeurs aberrantes ou incohérentes métier.
 
@@ -84,7 +85,7 @@ Sur le plan architectural, tout système MLOps repose sur l'isolement de 3 pilie
   * Module de pré-traitement spécifique au modèle (`src/preprocessing.py`) : normalisation/scaling, encodage des variables catégorielles, imputation avancée.
   * Module de création de variables (*Feature Engineering*) : calcul de retards (*lags*), statistiques glissantes, ratios métier.
   * Script d'entraînement et d'évaluation (`src/train.py`).
-  * Sauvegarde sérialisée des artefacts du modèle (`.pkl`, `.json`, `.onnx`) et des pré-traitements (*scalers*, *encoders*).
+  * Sauvegarde sérialisée des artefacts du modèle (`.joblib`, `.json`, `.onnx`).
 
 ---
 
@@ -92,7 +93,7 @@ Sur le plan architectural, tout système MLOps repose sur l'isolement de 3 pilie
 * **Objectif :** Rendre les décisions du modèle intelligibles pour les équipes métiers et surveiller l'évolution des données dans le temps.
 * **Livrables :**
   * Module d'explicabilité (`src/explainability.py`) intégrant les valeurs **SHAP** (explications globales et locales).
-  * Script de détection de dérive des données (*Data Drift*) comparant le jeu de données de référence avec les nouvelles données de production.
+  * Script de détection de dérive des données (*Data Drift*) comparant le jeu de données de référence avec les nouvelles données de production (via Evidently AI).
 
 ---
 
@@ -101,7 +102,7 @@ Sur le plan architectural, tout système MLOps repose sur l'isolement de 3 pilie
 * **Livrables :**
   * Application API (`src/api.py`) développée avec **FastAPI**.
   * Contrats de validation stricte des données d'entrée/sortie via **Pydantic**.
-  * Encapsulation optionnelle de l'application et de son environnement dans une image **Docker**.
+  * Encapsulation et exécution du service dans des conteneurs **Docker natifs Linux**.
 
 ---
 
@@ -110,13 +111,13 @@ Sur le plan architectural, tout système MLOps repose sur l'isolement de 3 pilie
 * **Livrables :**
   * Application d'interface utilisateur (`src/dashboard.py`) développée avec **Streamlit**.
   * Tableaux de bord décisionnels intégrant la restitution des prédictions, les graphiques d'explicabilité SHAP et les alertes de dérive des données.
-EOF
 
 </details>
 
 ---
 
-### [EN] English Version
+<details>
+<summary>🇬🇧 <b>English Version (Click to expand)</b></summary>
 
 
 ---
@@ -165,27 +166,28 @@ Architecturally, every MLOps system relies on the isolation of three core pillar
 
 
 ### 1. Initialization & Scoping
-* **Objective:** Establish core software infrastructure, version control, and development environment.
+* **Objective:** Establish core software infrastructure, version control, and development environment on a **native Linux / WSL2** host platform.
 * **Deliverables:**
   * Standard Git repository structure (`src/`, `data/`, `models/`, `reports/`, `notebooks/`, `docs/`).
-  * Declarative environment configuration file (`environment.yml` or `requirements.txt`).
+  * Containerized execution environment (Native Linux Docker Engine / WSL2 managed via `systemd`).
+  * Declarative environment configuration file (`requirements.txt`).
   * Custom `.gitignore` file tracking raw data, credentials, and model artifacts safely.
 
 ---
 
 ### 2. Data Infrastructure & Ingestion
-* **Objective:** Ensure reliable, reproducible, and idempotent access to source data.
+* **Objective:** Ensure reliable, reproducible, and idempotent access to source data via standard containerized services.
 * **Deliverables:**
-  * **Standard Option (Enterprise):** Containerized database service (e.g., `docker-compose.yml` with PostgreSQL, MySQL, etc.).
-  * **Light Option (POC / Files):** Data access module for flat files (`.csv`, `.parquet`) on local or Cloud storage (S3, GCS).
-  * Automated ingestion module (`src/ingestion.py` or `src/data_loader.py`).
+  * **Standard Option (Enterprise):** Containerized PostgreSQL database service orchestrated via standard **`docker compose`** (without interactive wrappers).
+  * **Light Option (POC / Files):** Data access module for flat files (`.csv`, `.parquet`) on local storage.
+  * Automated ingestion module (`src/ingestion.py`).
 
 ---
 
 ### 3. Ops Guardrails, Data Quality & Cleaning
 * **Objective:** Validate raw data integrity and perform surface cleaning before downstream processing.
 * **Deliverables:**
-  * Automated validation and cleaning pipeline (`src/validation.py` or `src/cleaning.py`).
+  * Automated validation and cleaning pipeline (`src/validation.py`).
   * Schema enforcement and data type validation.
   * Duplicate management, missing value strategy, and domain-specific outlier filtering.
 
@@ -197,7 +199,7 @@ Architecturally, every MLOps system relies on the isolation of three core pillar
   * Model-specific preprocessing module (`src/preprocessing.py`): scaling, categorical encoding, advanced imputation.
   * Feature engineering module: lag calculations, rolling statistics, business ratios.
   * Training and evaluation script (`src/train.py`).
-  * Serialized model artifacts (`.pkl`, `.json`, `.onnx`) and preprocessing objects (scalers, encoders).
+  * Serialized model artifacts (`.joblib`, `.json`, `.onnx`).
 
 ---
 
@@ -205,7 +207,7 @@ Architecturally, every MLOps system relies on the isolation of three core pillar
 * **Objective:** Provide interpretable insights for business stakeholders and monitor data distribution over time.
 * **Deliverables:**
   * Explainability module (`src/explainability.py`) integrating **SHAP** values (global and local interpretations).
-  * Data drift detection script comparing baseline datasets against incoming production data.
+  * Data drift detection script comparing baseline datasets against incoming production data (via Evidently AI).
 
 ---
 
@@ -214,7 +216,7 @@ Architecturally, every MLOps system relies on the isolation of three core pillar
 * **Deliverables:**
   * API application (`src/api.py`) powered by **FastAPI**.
   * Strict input/output payload data validation contracts using **Pydantic**.
-  * Optional application containerization using **Docker**.
+  * Application containerization running on **native Linux Docker containers**.
 
 ---
 
@@ -223,3 +225,5 @@ Architecturally, every MLOps system relies on the isolation of three core pillar
 * **Deliverables:**
   * User interface application (`src/dashboard.py`) built with **Streamlit**.
   * Executive dashboards featuring prediction displays, SHAP explainability plots, and data drift alerts.
+
+</details>

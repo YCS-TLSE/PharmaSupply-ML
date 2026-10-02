@@ -183,7 +183,8 @@ Voici l'analyse détaillée de ses composants et de sa logique de fonctionnement
 
 ---
 
-### [EN] English Version
+<details>
+<summary>🇬🇧 <b>English Version (Click to expand)</b></summary>
 
 ## 1. Phase Objectives
 Phase 05 aims to ensure auditability (traceability), transparency, and long-term reliability for any Machine Learning model deployed in production.
@@ -356,3 +357,6 @@ Here is the detailed breakdown of its components and operating logic:
 2. **`src/explainability.py`**: Automated Python module for SHAP extraction and figure/data export (`.png` / `.csv`).
 3. **`src/monitoring.py`**: Automated monitoring script built on Evidently AI with alert handling and HTML/JSON report generation.
 4. **`reports/figures/`**: Storage directory for explainability artifacts and drift report audits.
+
+</details>
+

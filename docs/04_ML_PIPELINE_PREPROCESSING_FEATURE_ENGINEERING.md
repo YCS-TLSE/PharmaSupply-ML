@@ -92,7 +92,8 @@ python src/train.py
 
 ---
 
-### [EN] English Version
+<details>
+<summary>🇬🇧 <b>English Version (Click to expand)</b></summary>
 
 ## 1. Overview & Objectives
 
@@ -171,3 +172,5 @@ To run the training pipeline within your Conda environment (`pharmasupply-ml`):
 conda activate pharmasupply-ml
 python src/train.py
 ~~~~
+
+</details>

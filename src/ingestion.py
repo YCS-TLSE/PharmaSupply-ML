@@ -32,20 +32,22 @@ DB_NAME = os.getenv("POSTGRES_DB")
 def ensure_postgres_running():
     """
     Ensures that the PostgreSQL Docker container is up and running.
-    Triggers the custom Docker wrapper via interactive Zsh shell.
     """
     try:
-        print("🐳 Verifying PostgreSQL Docker container status...")
-        # Force loading interactive shell aliases/functions via zsh -i
+        print(
+            "🐳 Verifying PostgreSQL Docker container status..."
+        )
         subprocess.run(
-            ["zsh", "-i", "-c", "docker compose up -d"],
+            ["docker", "compose", "up", "-d"],
             check=True,
         )
     except (
         subprocess.SubprocessError,
         FileNotFoundError,
     ) as error:
-        print(f"⚠️ Warning: Could not verify Docker container status: {error}")
+        print(
+            f"⚠️ Warning: Could not verify Docker container status: {error}"
+        )
 
 
 def get_db_engine():
@@ -86,7 +88,9 @@ def ingest_csv_to_postgres(
 
     try:
         engine = get_db_engine()
-        print(f"⏳ Ingesting {len(df)} rows into table '{table_name}'...")
+        print(
+            f"⏳ Ingesting {len(df)} rows into table '{table_name}'..."
+        )
 
         # Perform SQL ingestion (index=False prevents creating a Pandas index column in SQL)
         df.to_sql(
@@ -95,7 +99,9 @@ def ingest_csv_to_postgres(
             if_exists=if_exists,
             index=False,
         )
-        print(f"✅ Success! {len(df)} rows inserted into table '{table_name}'.")
+        print(
+            f"✅ Success! {len(df)} rows inserted into table '{table_name}'."
+        )
 
     except SQLAlchemyError as error:
         # Catch database-related issues (connection failures, schema errors)
@@ -110,7 +116,9 @@ if __name__ == "__main__":
     ensure_postgres_running()
 
     # Define path to raw CSV file inside root data/ directory
-    raw_data_path = ROOT_DIR / "data" / "pharmaceutical_demand_row.csv"
+    raw_data_path = (
+        ROOT_DIR / "data" / "pharmaceutical_demand_row.csv"
+    )
 
     # Execute ingestion into staging table
     ingest_csv_to_postgres(

@@ -143,7 +143,8 @@ docker compose exec postgres psql -U ycs_admin -d pharmasupply_db -c "SELECT COU
 
 ---
 
-### [EN] English Version
+<details>
+<summary>🇬🇧 <b>English Version (Click to expand)</b></summary>
 
 ### *This document details the containerized data storage infrastructure using Docker (PostgreSQL), explicit DDL schema management (`sql/schema.sql`), and the automated data ingestion pipeline (`src/ingestion.py`).*
 
@@ -273,3 +274,6 @@ python src/ingestion.py
 ~~~~bash
 docker compose exec postgres psql -U ycs_admin -d pharmasupply_db -c "SELECT COUNT(*) FROM raw_pharmaceutical_demand;"
 ~~~~
+
+</details>
+

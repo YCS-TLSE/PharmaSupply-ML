@@ -77,7 +77,8 @@ La documentation Swagger interactive est ensuite accessible à l'adresse : `http
 
 ---
 
-### [EN] English Version
+<details>
+<summary>🇬🇧 <b>English Version (Click to expand)</b></summary>
 
 ## 1. Overview & Objectives
 
@@ -141,3 +142,6 @@ uvicorn src.api:app --reload --host 0.0.0.0 --port 8000
 ~~~~
 
 Interactive Swagger documentation is then accessible at: `http://localhost:8000/docs`.
+
+
+</details>

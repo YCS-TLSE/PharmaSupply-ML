@@ -133,7 +133,8 @@ L'intégration directe dans l'éditeur force le formatage automatique à la sauv
 
 ---
 
-### [EN] English Version
+<details>
+<summary>🇬🇧 <b>English Version (Click to expand)</b></summary>
 
 ### *This document outlines the setup procedure for PharmaSupply-ML: repository structure, Conda environment, dependency management, and code quality controls.*
 
@@ -253,3 +254,5 @@ VS Code is configured to apply auto-formatting and import sorting on every save:
   }
 }
 ~~~~
+
+</details>
