@@ -1,18 +1,21 @@
 """Master MLOps Pipeline Orchestrator.
 
 Sequentially executes:
-1. Docker infrastructure check/startup.
+1. Docker infrastructure check/startup (Postgres + FastAPI).
 2. Raw data generation (if missing) & PostgreSQL ingestion.
 3. Feature engineering & data extraction from DB.
 4. Model training & evaluation.
 5. SHAP Explainability report.
 6. Evidently AI Drift Monitoring.
+7. REST API Integration & Serving test (/predict).
 """
 
+import json
 import logging
 import socket
 import subprocess
 import time
+import urllib.request
 from pathlib import Path
 
 from src.explainability import ModelExplainer
@@ -30,39 +33,98 @@ logging.basicConfig(
 )
 
 
+def is_port_open(
+    host: str, port: int, timeout: float = 2.0
+) -> bool:
+    """Utility function to check socket connection on a target port."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    is_open = sock.connect_ex((host, port)) == 0
+    sock.close()
+    return is_open
+
+
 def ensure_docker_running() -> None:
-    """Verifies PostgreSQL container availability via socket check and attempts auto-start if down."""
+    """Verifies PostgreSQL (5432) and FastAPI (8000) availability and attempts auto-start if down."""
     logging.info(
-        "Step 0: Checking PostgreSQL connectivity on port 5432..."
+        "Step 0: Checking Docker infrastructure availability..."
     )
 
-    # 1. Test de connexion direct sur le port 5432
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(2)
-    is_open = sock.connect_ex(("127.0.0.1", 5432)) == 0
-    sock.close()
+    pg_online = is_port_open("127.0.0.1", 5432)
+    api_online = is_port_open("127.0.0.1", 8000)
 
-    if is_open:
+    if pg_online and api_online:
         logging.info(
-            "PostgreSQL service is online and accepting connections."
+            "PostgreSQL (5432) and FastAPI (8000) services are online."
         )
         return
 
-    # 2. Tentative de lancement si le port n'est pas ouvert
     logging.info(
-        "Port 5432 unreachable. Attempting to start Docker containers..."
+        "One or more services unreachable. Attempting to start Docker Compose..."
     )
     try:
         subprocess.run(
             ["docker", "compose", "up", "-d"], check=True
         )
-        # Laisser un court délai pour que PostgreSQL soit prêt à accepter des connexions
         time.sleep(5)
         logging.info("Docker Compose services started.")
     except Exception as e:
         logging.warning(
-            f"Could not trigger Docker automatically: {e}. Ensure Docker Desktop and Postgres are running."
+            f"Could not trigger Docker automatically: {e}. Ensure Docker Desktop is running."
         )
+
+
+def verify_api_serving() -> None:
+    """Tests the API /predict endpoint to confirm the deployed model works in runtime."""
+    logging.info(
+        "Step 7: Verifying REST API serving inference (/predict)..."
+    )
+
+    url = "http://localhost:8000/predict"
+    payload = [
+        {
+            "store_id": 101,
+            "product_id": 2045,
+            "month": 10,
+            "dayofweek": 2,
+            "is_weekend": 0,
+            "stock_on_hand": 500.0,
+            "supplier_lead_time": 3.0,
+            "lag_7": 120.5,
+            "lag_14": 115.0,
+            "lag_30": 110.0,
+            "rolling_mean_7": 118.2,
+            "rolling_mean_30": 112.4,
+        }
+    ]
+
+    try:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+        )
+
+        with urllib.request.urlopen(
+            req, timeout=5
+        ) as response:
+            if response.status == 200:
+                result = json.loads(
+                    response.read().decode("utf-8")
+                )
+                predicted_demand = result[0].get(
+                    "predicted_demand"
+                )
+                logging.info(
+                    f"✅ API Response Received: Predicted Demand = {predicted_demand:.2f}"
+                )
+            else:
+                logging.error(
+                    f"❌ API return status code: {response.status}"
+                )
+    except Exception as e:
+        logging.error(f"❌ API Serving test failed: {e}")
 
 
 def main() -> None:
@@ -78,7 +140,7 @@ def main() -> None:
     # 0. Infrastructure Check
     ensure_docker_running()
 
-    # 1. Ingestion Automatique (Génération et/ou Chargement en BDD)
+    # 1. Ingestion Automatique
     logging.info(
         "Step 1: Ingesting raw data into PostgreSQL..."
     )
@@ -86,7 +148,6 @@ def main() -> None:
         "data/pharmaceutical_demand_row.csv"
     )
 
-    # Si le fichier CSV brut n'existe pas, on le génère à la volée
     if not raw_data_path.exists():
         logging.info(
             "Synthetic dataset not found. Generating data..."
@@ -99,13 +160,12 @@ def main() -> None:
         )
         df_pharma.to_csv(raw_data_path, index=False)
 
-    # Ingestion dans PostgreSQL (crée la table et insère les données)
     ingest_csv_to_postgres(
         file_path=raw_data_path,
         table_name="raw_pharmaceutical_demand",
     )
 
-    # 2. Feature Engineering & Chargement depuis la base
+    # 2. Feature Engineering
     logging.info(
         "Step 2: Extracting data from DB & engineering features..."
     )
@@ -149,6 +209,9 @@ def main() -> None:
         output_html_path="reports/drift_report.html",
     )
 
+    # 6. REST API Infeference Validation
+    verify_api_serving()
+
     logging.info(
         "=========================================="
     )
@@ -159,7 +222,10 @@ def main() -> None:
     )
     logging.info(" - SHAP figures    : reports/figures/")
     logging.info(
-        " - Drift report     : reports/drift_report.html"
+        " - Drift report    : reports/drift_report.html"
+    )
+    logging.info(
+        " - API Endpoint    : http://localhost:8000/predict"
     )
     logging.info(
         "=========================================="

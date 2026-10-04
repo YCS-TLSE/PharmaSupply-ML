@@ -11,3 +11,10 @@ select = ["E", "F", "I"]
 ignore = [
     "E501", # Lignes longues
 ]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    # Masquer uniquement les warnings venant des dépendances tierces identifiées
+    "ignore::DeprecationWarning:starlette.*",
+    "ignore::DeprecationWarning:anyio.*",
+]
