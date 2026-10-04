@@ -67,55 +67,54 @@ Cependant, l'architecture respecte le principe de **découplage** :
 
 ## Démarrage rapide (Quickstart)
 
-> ⚠️ **Prérequis :** Assurez-vous d'avoir Docker et Conda installés sur votre machine (ou WSL2).
+> ⚠️ **Prérequis :** Assurez-vous d'avoir Docker et Conda (ou Python 3.11 avec `venv`) installés sur votre machine.
 
 1. **Cloner le dépôt et se placer dans le projet**
 
-```bash
-git clone https://github.com/votre-user/PharmaSupply-ML.git
+~~~~bash
+git clone https://github.com/YCS-TLSE/PharmaSupply-ML.git
 cd PharmaSupply-ML
-```
+~~~~
 
-2. **Créer et activer l'environnement virtuel Conda**
+2. **Créer et activer l'environnement virtuel**
 
-```bash
-conda create -n pharmasupply-ml python=3.11 -y
+* **Option A : Avec Conda (Recommandé)**
+~~~~bash
+conda env create -f environment.yml
 conda activate pharmasupply-ml
+~~~~
+
+* **Option B : Avec Pip / venv classique**
+~~~~bash
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-```
+~~~~
 
 3. **Démarrer l'infrastructure (PostgreSQL via Docker)**
 
-```bash
+~~~~bash
 docker compose up -d
-```
+~~~~
 
-4. **Générer les données et exécuter l'ingestion**
+4. **Exécuter le pipeline complet de bout en bout (Orchestration E2E)**
 
-```bash
-python src/generate_data.py
-python src/ingestion.py
-```
+~~~~bash
+python run_pipeline.py
+~~~~
+*(Ce script orchestre automatiquement : la génération de données synthétiques, l'ingestion PostgreSQL, la validation des données, l'entraînement XGBoost et l'explicabilité/monitoring).*
 
-5. **Valider les données, entraîner le modèle et générer l'explicabilité**
+5. **(Optionnel) Lancer l'API REST FastAPI en autonome**
 
-```bash
-python src/validation.py
-python src/train.py
-python src/explain.py
-```
-
-6. **Lancer l'API REST FastAPI**
-
-```bash
+~~~~bash
 uvicorn src.api:app --reload --host 0.0.0.0 --port 8000
-```
+~~~~
 
-7. **Lancer le Dashboard Streamlit (dans un nouveau terminal)**
+6. **Lancer le Dashboard Streamlit (Phase 07 - à venir)**
 
-```bash
+~~~~bash
 streamlit run src/streamlit.py
-```
+~~~~
 
 ---
 
@@ -192,55 +191,54 @@ The project is developed under **WSL2 (Ubuntu)** using a **Bash / Zsh** shell en
 
 ## Quickstart
 
-> ⚠️ **Prerequisites:** Ensure Docker and Conda are installed in your environment.
+> ⚠️ **Prerequisites:** Ensure Docker and Conda (or Python 3.11 with `venv`) are installed in your environment.
 
 1. **Clone the repository and enter the directory**
 
-```bash
-git clone https://github.com/votre-user/PharmaSupply-ML.git
+~~~~bash
+git clone https://github.com/YCS-TLSE/PharmaSupply-ML.git
 cd PharmaSupply-ML
-```
+~~~~
 
-2. **Create and activate the Conda virtual environment**
+2. **Create and activate the virtual environment**
 
-```bash
-conda create -n pharmasupply-ml python=3.11 -y
+* **Option A: Using Conda (Recommended)**
+~~~~bash
+conda env create -f environment.yml
 conda activate pharmasupply-ml
+~~~~
+
+* **Option B: Using Pip / Standard venv**
+~~~~bash
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-```
+~~~~
 
 3. **Start the infrastructure (PostgreSQL via Docker)**
 
-```bash
+~~~~bash
 docker compose up -d
-```
+~~~~
 
-4. **Generate data and execute ingestion**
+4. **Run the full End-to-End Orchestrated Pipeline**
 
-```bash
-python src/generate_data.py
-python src/ingestion.py
-```
+~~~~bash
+python run_pipeline.py
+~~~~
+*(This script automatically orchestrates: synthetic data generation, PostgreSQL ingestion, data quality validation, XGBoost training, and SHAP/Evidently monitoring).*
 
-5. **Validate data, train model, and generate explainability outputs**
+5. **(Optional) Launch the FastAPI REST API service independently**
 
-```bash
-python src/validation.py
-python src/train.py
-python src/explain.py
-```
-
-6. **Launch the FastAPI REST API service**
-
-```bash
+~~~~bash
 uvicorn src.api:app --reload --host 0.0.0.0 --port 8000
-```
+~~~~
 
-7. **Launch the Streamlit Dashboard (in a new terminal)**
+6. **Launch the Streamlit Dashboard (Phase 07 - upcoming)**
 
-```bash
+~~~~bash
 streamlit run src/streamlit.py
-```
+~~~~
 
 ---
 
