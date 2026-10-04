@@ -1,1 +1,2 @@
 reports/**/*.html linguist-generated=true
+*.ipynb linguist-generated=true
