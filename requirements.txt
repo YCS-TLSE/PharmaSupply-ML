@@ -16,8 +16,8 @@ uvicorn
 pydantic
 python-dotenv
 evidently
+streamlit
 ruff
 httpx
 httpx2
-pipreqs
 psycopg[binary]

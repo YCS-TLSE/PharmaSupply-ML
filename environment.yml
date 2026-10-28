@@ -4,12 +4,12 @@ channels:
   - defaults
 dependencies:
   - python=3.11
-  - pandas
+  - pandas<2.0
   - sqlalchemy
   - psycopg2
   - numpy
   - joblib
-  - xgboost
+  - xgboost<3.0
   - scikit-learn
   - shap
   - matplotlib
@@ -23,6 +23,7 @@ dependencies:
       - pydantic
       - python-dotenv
       - evidently
+      - streamlit
       - ruff
       - httpx
       - httpx2

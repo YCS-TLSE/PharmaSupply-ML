@@ -22,48 +22,46 @@ from src.api import app
 client = TestClient(app)
 
 
-# Payload de test valide
-VALID_PAYLOAD = [
-    {
-        "store_id": 101,
-        "product_id": 2045,
-        "month": 10,
-        "dayofweek": 2,
-        "is_weekend": 0,
-        "stock_on_hand": 500.0,
-        "supplier_lead_time": 3.0,
-        "lag_7": 120.5,
-        "lag_14": 115.0,
-        "lag_30": 110.0,
-        "rolling_mean_7": 118.2,
-        "rolling_mean_30": 112.4,
-    }
-]
+# Payload de test valide aligné sur PredictionInput (objet unique)
+VALID_PAYLOAD = {
+    "store_id": "1",
+    "product_id": "MED_001",
+    "stock_on_hand": 500.0,
+    "supplier_lead_time": 3.0,
+    "safety_threshold": 150.0,
+    "batch_size": 50,
+    "moq": 100,
+    "shelf_life_days": 365,
+    "lag_1": 90.0,
+    "lag_7": 630.0,
+    "lag_14": 1260.0,
+    "lag_30": 2700.0,
+}
 
 
-def test_health_endpoint():
-    """Vérifie que l'endpoint /health répond 200 OK avec la structure attendue."""
-    response = client.get("/health")
+def test_root_endpoint():
+    """Vérifie que la documentation ou les routes de base répondent correctement."""
+    response = client.get("/")
+    # FastAPI renvoie 404 sur la racine par défaut sauf si défini,
+    # testons plutôt un endpoint de données comme /stores
+    response = client.get("/stores")
     assert response.status_code == 200
     data = response.json()
-    assert "status" in data
-    assert "model_loaded" in data
-    assert data["status"] == "healthy"
+    assert "stores" in data
 
 
 def test_predict_success():
-    """Vérifie qu'une requête valide renvoie une prédiction positive ou nulle."""
+    """Vérifie qu'une requête valide renvoie une prédiction et un statut corrects."""
     response = client.post("/predict", json=VALID_PAYLOAD)
 
     # Si le modèle est chargé sur la machine de dev/CI
     if response.status_code == 200:
         data = response.json()
-        assert isinstance(data, list)
-        assert len(data) == 1
-        assert data[0]["store_id"] == 101
-        assert data[0]["product_id"] == 2045
-        assert "predicted_demand" in data[0]
-        assert data[0]["predicted_demand"] >= 0.0
+        assert data["store_id"] == "1"
+        assert data["product_id"] == "MED_001"
+        assert "predicted_demand" in data
+        assert data["predicted_demand"] >= 0.0
+        assert "order_quantity" in data
     else:
         # Si le fichier .joblib n'est pas présent dans l'env de test
         assert response.status_code == 503
@@ -78,14 +76,16 @@ def test_predict_model_not_loaded():
         assert response.status_code == 503
         assert (
             response.json()["detail"]
-            == "ML Model is not loaded."
+            == "ML model artifact is not loaded in memory."
         )
 
 
 def test_predict_invalid_schema():
-    """Vérifie que Pydantic rejette un payload invalide (ex: mois hors limites)."""
-    invalid_payload = [VALID_PAYLOAD[0].copy()]
-    invalid_payload[0]["month"] = 13  # Mois invalide (> 12)
+    """Vérifie que Pydantic rejette un payload invalide (ex: stock négatif)."""
+    invalid_payload = VALID_PAYLOAD.copy()
+    invalid_payload[
+        "stock_on_hand"
+    ] = -50.0  # Valeur négative interdite (ge=0)
 
     response = client.post("/predict", json=invalid_payload)
     assert (

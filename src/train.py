@@ -1,50 +1,36 @@
-"""Module for feature engineering, time-based split, and XGBoost model training.
+"""
+===============================================================================
+PharmaSupply-ML: Feature Engineering, Temporal Split & XGBoost Training
+===============================================================================
 
-CONTEXT & PURPOSE:
+OBJECTIVE & USAGE:
 ------------------
-This script forms the Machine Learning core of the MLOps pipeline. It reads raw
-ingested data from PostgreSQL, constructs temporal and lag features, and trains
-an XGBoost regressor to forecast pharmaceutical product demand.
+This script forms the Machine Learning core of the MLOps pipeline. It:
+1. Integrates with the autonomous data validation module (`validation.py`) to
+   guarantee clean, auto-corrected input data.
+2. Constructs robust temporal, lag, and rolling statistics features.
+3. Performs a rigorous time-based chronological split (preventing data leakage).
+4. Trains an XGBoost regressor to forecast pharmaceutical product demand and
+   persists the serialized artifact.
 
-MODEL SELECTION (WHY XGBOOST?):
--------------------------------
-1. Tabular Efficiency: Gradient Boosted Decision Trees consistently outperform
-   deep learning models on structured tabular time-series data with small to
-   medium observation counts.
-2. Nonlinear & Seasonal Dynamics: Handles non-linear trends, complex multi-year
-   seasonalities (winter flu, spring allergies), and sudden demand spikes without
-   requiring strict data stationarity assumptions.
-3. Feature Importance & Interpretability: Provides direct insights into key drivers
-   (e.g., lag weight vs. stock levels), which is essential for supply chain planning.
-4. Robustness to Noise & Outliers: Tree-based partitioning is resilient to delivery
-   shocks and temporary supply chain anomalies.
-
-DESIGN & ARCHITECTURE:
-----------------------
-1. Data-Agnostic Contract:
-   The pipeline assumes no specific generator logic. It strictly relies on a
-   standard schema (date, product_id, sales_volume, stock_on_hand, etc.), making it
-   ready to process real-world client data.
-
-2. Censored Demand Handling:
-   To prevent zero-sales during stockouts from skewing lag features, stockout periods
-   are masked and forward-filled (demand signal reconstruction).
-
-3. Time-Based Validation:
-   Prevents temporal data leakage by splitting train/test sets sequentially along
-   the timeline rather than using random cross-validation.
+Author: YCS-TLSE
+Project: PharmaSupply-ML
 """
 
+# ==============================================================================
+# 1. IMPORTS & CONFIGURATION
+# ==============================================================================
 import logging
-import os
 from pathlib import Path
 
 import joblib
 import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
-from sqlalchemy import create_engine
 from xgboost import XGBRegressor
+
+# Import the autonomous validation and cleaning gate
+from src.validation import run_validation_and_clean
 
 # Load environment variables from .env file
 load_dotenv()
@@ -55,31 +41,16 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
-# Extract database credentials from environment variables
-DB_USER = os.getenv("POSTGRES_USER", "ycs_admin")
-DB_PASSWORD = os.getenv(
-    "POSTGRES_PASSWORD", "ycs_admin_secure_password"
-)
-DB_HOST = os.getenv("POSTGRES_HOST", "localhost")
-DB_PORT = os.getenv("POSTGRES_PORT", "5432")
-DB_NAME = os.getenv("POSTGRES_DB", "pharmasupply_db")
 
-DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+def load_validated_data() -> pd.DataFrame:
+    """Fetches raw data through the automated validation and cleaning quality gate,
 
-
-def load_data_from_db() -> pd.DataFrame:
-    """Fetch raw historical records from PostgreSQL, ordered chronologically.
-
-    Returns:
-        pd.DataFrame: Raw dataset containing daily stock and sales records.
+    ensuring all anomalies are auto-corrected or structurally verified.
     """
-    engine = create_engine(DATABASE_URL)
-    query = "SELECT * FROM raw_pharmaceutical_demand ORDER BY date ASC;"
-
     logging.info(
-        "Fetching raw data from PostgreSQL database..."
+        "Initiating data loading via Autonomous Validation Quality Gate..."
     )
-    df = pd.read_sql(query, engine)
+    df = run_validation_and_clean()
 
     # Cast date column to explicit datetime objects for temporal processing
     df["date"] = pd.to_datetime(df["date"])
@@ -87,72 +58,69 @@ def load_data_from_db() -> pd.DataFrame:
 
 
 def create_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Engineer calendar, lag, and rolling window features for time-series forecasting.
-
-    Args:
-        df (pd.DataFrame): Raw transactional data sorted by product and date.
-
-    Returns:
-        pd.DataFrame: Enriched dataset containing lag features and target variables.
-    """
+    """Engineer calendar, lag, and rolling window features, plus 7-day cumulative target."""
     logging.info(
         "Engineering dynamic features (calendar, lags, rolling statistics)..."
     )
 
-    # Ensure strict sorting by product and time before calculating rolling stats
-    df = df.sort_values(["product_id", "date"]).reset_index(
-        drop=True
+    # Grouping keys to avoid bleeding lag signals across different stores/products
+    group_cols = (
+        ["store_id", "product_id"]
+        if "store_id" in df.columns
+        else ["product_id"]
     )
 
+    # Ensure strict sorting by store, product, and time before calculating rolling stats
+    sort_cols = group_cols + ["date"]
+    df = df.sort_values(sort_cols).reset_index(drop=True)
+
     # --- 1. Calendar Features ---
-    # Extract seasonal patterns directly from the date object
     df["month"] = df["date"].dt.month
     df["dayofweek"] = df["date"].dt.dayofweek
     df["is_weekend"] = (df["dayofweek"] >= 5).astype(int)
 
     # --- 2. Censored Demand Reconstruction ---
-    # When a stockout occurs (is_stockout = 1), sales_volume drops to 0 or stock limit.
-    # We replace stockout sales with NaN to avoid propagating false "zero-demand" into lags.
     df["demand_signal"] = np.where(
         df["is_stockout"] == 1, np.nan, df["sales_volume"]
     )
-
-    # Impute missing demand signals during stockouts via forward/backward filling per product
     df["demand_signal"] = (
-        df.groupby("product_id")["demand_signal"]
+        df.groupby(group_cols)["demand_signal"]
         .ffill()
         .bfill()
     )
 
     # --- 3. Lag and Rolling Window Features ---
-    # Create historical lags (7, 14, and 30 days) per product group
     for lag in [7, 14, 30]:
-        df[f"lag_{lag}"] = df.groupby("product_id")[
+        df[f"lag_{lag}"] = df.groupby(group_cols)[
             "demand_signal"
         ].shift(lag)
 
-    # Create rolling averages over past 7 and 30 days (shift by 1 to prevent data leakage)
     for window in [7, 30]:
         df[f"rolling_mean_{window}"] = df.groupby(
-            "product_id"
+            group_cols
         )["demand_signal"].transform(
             lambda x: x.shift(1).rolling(window).mean()
         )
 
-    # Drop initial rows per product where lag values are NaN due to shifting
-    df = df.dropna().reset_index(drop=True)
+    # --- 4. TARGET RECALCULATION (CUMULATED DEMAND OVER NEXT 7 DAYS) ---
+    df["target_demand"] = df.groupby(group_cols)[
+        "demand_signal"
+    ].transform(
+        lambda x: (
+            x.rolling(7, min_periods=7).sum().shift(-6)
+        )
+    )
+
+    # Drop initial NaN rows (lags) and ending NaN rows (future target window)
+    df = df.dropna(
+        subset=["lag_30", "target_demand"]
+    ).reset_index(drop=True)
+
     return df
 
 
 def train_xgboost(df: pd.DataFrame):
-    """Train an XGBoost regressor using a time-based split and evaluate performance.
-
-    Args:
-        df (pd.DataFrame): Enriched dataset containing target and engineered features.
-
-    Returns:
-        tuple: (model, metrics, X_test, y_test)
-    """
+    """Train an XGBoost regressor using a time-based split and evaluate performance."""
     feature_cols = [
         "month",
         "dayofweek",
@@ -192,10 +160,12 @@ def train_xgboost(df: pd.DataFrame):
         f"{test_df['date'].max().strftime('%Y-%m-%d')} ({len(test_df)} rows)"
     )
 
+    # Instantiate XGBoost regressor with explicit base_score to prevent SHAP parsing crash
     model = XGBRegressor(
         n_estimators=150,
         learning_rate=0.05,
         max_depth=5,
+        base_score=0.5,
         random_state=42,
     )
     model.fit(X_train, y_train)
@@ -209,8 +179,6 @@ def train_xgboost(df: pd.DataFrame):
         / np.sum(y_test)
         * 100
     )
-
-    metrics = {"mae": mae, "rmse": rmse, "wmape": wmape}
 
     logging.info("--- Model Evaluation Results ---")
     logging.info(f"MAE:   {mae:.2f}")
@@ -226,10 +194,15 @@ def train_xgboost(df: pd.DataFrame):
         f"Model artifact saved successfully -> {model_path}"
     )
 
-    return model, metrics, X_test, y_test
+    return (
+        model,
+        {"mae": mae, "rmse": rmse, "wmape": wmape},
+        X_test,
+        y_test,
+    )
 
 
 if __name__ == "__main__":
-    df_raw = load_data_from_db()
+    df_raw = load_validated_data()
     df_features = create_features(df_raw)
     train_xgboost(df_features)
