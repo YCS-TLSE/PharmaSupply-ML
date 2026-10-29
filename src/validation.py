@@ -25,23 +25,10 @@ Project: PharmaSupply-ML
 # ==============================================================================
 # 1. IMPORTS & CONFIGURATION
 # ==============================================================================
-import os
-
 import pandas as pd
-from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
-load_dotenv()
-
-DB_USER = os.getenv("POSTGRES_USER", "ycs_admin")
-DB_PASSWORD = os.getenv(
-    "POSTGRES_PASSWORD", "ycs_admin_secure_password"
-)
-DB_HOST = os.getenv("POSTGRES_HOST", "localhost")
-DB_PORT = os.getenv("POSTGRES_PORT", "5432")
-DB_NAME = os.getenv("POSTGRES_DB", "pharmasupply_db")
-
-DB_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+from src.db_config import get_database_url
 
 
 def run_validation_and_clean() -> pd.DataFrame:
@@ -55,7 +42,7 @@ def run_validation_and_clean() -> pd.DataFrame:
     Raises:
         ValueError: If critical structural errors occur.
     """
-    engine = create_engine(DB_URL)
+    engine = create_engine(get_database_url())
 
     with engine.connect() as conn:
         df = pd.read_sql(

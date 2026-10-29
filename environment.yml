@@ -1,31 +1,28 @@
-name: pharma-supply
+name: pharma-supply-cursor
 channels:
   - conda-forge
   - defaults
 dependencies:
   - python=3.11
-  - pandas<2.0
-  - sqlalchemy
-  - psycopg2
-  - numpy
-  - joblib
-  - xgboost<3.0
-  - scikit-learn
-  - shap
-  - matplotlib
-  - jupyterlab
-  - ipywidgets
-  - pytest
+  - pandas=1.5.3
+  - numpy=1.26.4
+  - sqlalchemy=2.0.*
+  - psycopg2=2.9.*
+  - joblib=1.4.*
+  - xgboost=2.1.*
+  - scikit-learn=1.5.*
+  - shap=0.46.*
+  - matplotlib=3.9.*
+  - jupyterlab=4.3.*
+  - ipywidgets=8.1.*
+  - pytest=8.3.*
   - pip
   - pip:
-      - fastapi
-      - uvicorn
-      - pydantic
-      - python-dotenv
-      - evidently
-      - streamlit
-      - ruff
-      - httpx
-      - httpx2
-      - "psycopg[binary]"
-      
+      - fastapi==0.115.6
+      - uvicorn==0.32.1
+      - pydantic==2.10.3
+      - python-dotenv==1.0.1
+      - evidently==0.7.14
+      - streamlit==1.40.2
+      - ruff==0.8.6
+      - requests==2.32.3

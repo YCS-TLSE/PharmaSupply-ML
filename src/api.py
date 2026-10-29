@@ -38,6 +38,8 @@ import psycopg2.extras
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 
+from src.db_config import get_database_url
+
 # Setup standard logging configuration for API runtime monitoring
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pharmasupply-api")
@@ -49,18 +51,6 @@ logger = logging.getLogger("pharmasupply-api")
 MODEL_PATH = os.getenv(
     "MODEL_PATH", "models/xgboost_pharma_demand.joblib"
 )
-
-# Database connection parameters retrieved from environment variables
-DB_USER = os.getenv("POSTGRES_USER", "ycs_admin")
-DB_PASSWORD = os.getenv(
-    "POSTGRES_PASSWORD", "ycs_admin_secure_password"
-)
-DB_HOST = os.getenv("POSTGRES_HOST", "pharmasupply-db")
-DB_PORT = os.getenv("POSTGRES_PORT", "5432")
-DB_NAME = os.getenv("POSTGRES_DB", "pharmasupply_db")
-
-DEFAULT_DB_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DB_URL)
 
 STATUS_FILE_PATH = os.getenv(
     "STATUS_FILE_PATH", "model_status.txt"
@@ -85,7 +75,7 @@ FEATURE_COLS = [
 
 def get_db_connection():
     """Establishes and returns a live connection to the PostgreSQL database."""
-    return psycopg2.connect(DATABASE_URL)
+    return psycopg2.connect(get_database_url())
 
 
 def get_model_status() -> str:

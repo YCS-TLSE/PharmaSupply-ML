@@ -15,8 +15,8 @@ supply chain forecasting system. It provides:
    safety thresholds, batch sizes, minimum order quantities (MOQ), shelf-life
    parameters, and critical expiry tracking (FEFO) per product, falling back
    gracefully to sensible default values.
-4. Relational Database Loading: Persists the structured staging dataframe into
-   PostgreSQL using SQLAlchemy for downstream feature engineering and model training.
+4. Relational Database Loading: Truncates the existing staging table (preserving
+   PostgreSQL DDL, SERIAL keys, and indexes) then appends rows via SQLAlchemy.
 
 Author: YCS-TLSE
 Project: PharmaSupply-ML
@@ -25,27 +25,14 @@ Project: PharmaSupply-ML
 # ==============================================================================
 # 1. IMPORTS & CONFIGURATION
 # ==============================================================================
-import os
 import subprocess
 from pathlib import Path
 
 import pandas as pd
-from dotenv import load_dotenv
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 
-# Resolve project root directory dynamically to ensure environment-agnostic paths
-ROOT_DIR = Path(__file__).resolve().parent.parent
-
-# Load environment variables explicitly from root .env configuration
-load_dotenv(dotenv_path=ROOT_DIR / ".env")
-
-# Retrieve database connection credentials matching environment specifications
-DB_USER = os.getenv("POSTGRES_USER")
-DB_PASSWORD = os.getenv("POSTGRES_PASSWORD")
-DB_HOST = os.getenv("POSTGRES_HOST", "localhost")
-DB_PORT = os.getenv("POSTGRES_PORT", "5432")
-DB_NAME = os.getenv("POSTGRES_DB")
+from src.db_config import ROOT_DIR, get_database_url
 
 
 def ensure_postgres_running():
@@ -77,22 +64,28 @@ def get_db_engine():
     Returns:
         sqlalchemy.engine.Engine: Configured database connection engine.
     """
-    database_url = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-    return create_engine(database_url)
+    return create_engine(get_database_url())
 
 
 # ==============================================================================
 # 2. INGESTION FUNCTION
 # ==============================================================================
+def _assert_safe_table_name(table_name: str) -> None:
+    """Reject identifiers that cannot be interpolated into TRUNCATE safely."""
+    if not table_name.replace("_", "").isalnum():
+        raise ValueError(
+            f"Unsafe table name '{table_name}': use letters, digits, and underscores only."
+        )
+
+
 def ingest_csv_to_postgres(
     file_path: Path,
     table_name: str,
-    if_exists: str = "replace",
 ):
     """
     Reads a raw CSV file via Pandas, normalizes operational features, and ingests
-    its content into PostgreSQL using SQLAlchemy. Handles multi-store structures,
-    custom safety thresholds, logistical constraints, and critical expiry tracking.
+    its content into PostgreSQL using SQLAlchemy. Truncates the target table
+    first so PostgreSQL DDL (types, SERIAL PK, indexes) is preserved.
     """
     if not file_path.exists():
         print(f"❌ Error: File '{file_path}' not found.")
@@ -169,21 +162,55 @@ def ingest_csv_to_postgres(
             .astype(int)
         )
 
-    # --- 7. RELATIONAL DATABASE PERSISTENCE ---
+    # --- 7. RELATIONAL DATABASE PERSISTENCE (TRUNCATE + APPEND) ---
     try:
+        _assert_safe_table_name(table_name)
         engine = get_db_engine()
+        inspector = inspect(engine)
+
+        if not inspector.has_table(table_name):
+            print(
+                f"❌ Error: Table '{table_name}' does not exist. "
+                "Apply sql/schema.sql before ingesting."
+            )
+            return
+
+        table_columns = {
+            column["name"] for column in inspector.get_columns(table_name)
+        }
+        # Let PostgreSQL populate SERIAL id and created_at defaults.
+        insert_columns = [
+            col
+            for col in df.columns
+            if col in table_columns and col not in {"id", "created_at"}
+        ]
+        if not insert_columns:
+            print(
+                f"❌ Error: No CSV columns match the schema of '{table_name}'."
+            )
+            return
+
+        df_to_load = df[insert_columns]
         print(
-            f"⏳ Ingesting {len(df)} structured records into staging table '{table_name}'..."
+            f"⏳ Truncating '{table_name}' (DDL preserved) then appending "
+            f"{len(df_to_load)} records..."
         )
 
-        df.to_sql(
+        with engine.begin() as connection:
+            connection.execute(
+                text(f"TRUNCATE TABLE {table_name} RESTART IDENTITY")
+            )
+
+        df_to_load.to_sql(
             name=table_name,
             con=engine,
-            if_exists=if_exists,
+            if_exists="append",
             index=False,
         )
+
         print(
-            f"✅ Success! {len(df)} rows successfully loaded into table '{table_name}'."
+            f"✅ Success! {len(df_to_load)} rows loaded into '{table_name}' "
+            "without replacing the table definition."
         )
         print(
             f"📊 Active stores detected: {df['store_id'].unique().tolist()}"

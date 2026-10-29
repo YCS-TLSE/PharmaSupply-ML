@@ -6,7 +6,7 @@
 # - PostgreSQL database initialized with schemas supporting FEFO critical expiry.
 # - FastAPI backend serving demand forecasting, replenishment, and alerts.
 # - Streamlit dashboard providing the vertical top-to-bottom UI and control center.
-# - Shared persistence volumes for model health status (model_status.txt) and reports.
+# - Shared persistence volumes for ML models (models/), health status (model_status.txt), and reports.
 # ==============================================================================
 
 services:
@@ -46,8 +46,9 @@ services:
       - "8000:8000"
     volumes:
       - ./src:/app/src
-      - ./model_status.txt:/app/model_status.txt # Synchronisation de l'état du modèle (Drift)
-      - ./reports:/app/reports # Partage des rapports Evidently AI
+      - ./models:/app/models # Shared volume for dynamic ML model artifact updates (Train/Serve decoupling)
+      - ./model_status.txt:/app/model_status.txt # Synchronization of model drift health status
+      - ./reports:/app/reports # Sharing Evidently AI monitoring reports
     depends_on:
       postgres:
         condition: service_healthy
@@ -66,10 +67,9 @@ services:
       - "8501:8501"
     volumes:
       - ./src:/app/src
-      - ./model_status.txt:/app/model_status.txt # Accès aux statuts d'alerte global
+      - ./model_status.txt:/app/model_status.txt # Access to global model alert statuses
     depends_on:
       - api
 
 volumes:
-  postgres_data:
-    driver: local
+  postgres_data: {}
