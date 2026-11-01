@@ -2,10 +2,12 @@
 > **Standard MLOps Framework (V1) & Generative AI (V2) Blueprint | Production-Ready Educational Guide**
 
 
-![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat&logo=python&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat&logo=docker&logoColor=white)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?style=flat&logo=postgresql&logoColor=white)
-![XGBoost](https://img.shields.io/badge/Model-XGBoost-111111?style=flat)
+![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
+![Model](https://img.shields.io/badge/Model-XGBoost-orange)
+![GenAI](https://img.shields.io/badge/GenAI-RAG_%2F_LLM_Agent-8A2BE2)
+![LangChain](https://img.shields.io/badge/LangChain-Enabled-1C3C3C?logo=langchain&logoColor=white)
 [![Status](https://img.shields.io/badge/Status-In%20Development-orange)]()
 ![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)
 
