@@ -6,7 +6,7 @@
 ![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat&logo=docker&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?style=flat&logo=postgresql&logoColor=white)
 ![XGBoost](https://img.shields.io/badge/Model-XGBoost-111111?style=flat)
-![Status](https://img.shields.io/badge/Status-Operational-green?style=flat)
+[![Status](https://img.shields.io/badge/Status-In%20Development-orange)]()
 ![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)
 
 ---
