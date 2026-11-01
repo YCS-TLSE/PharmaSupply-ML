@@ -1,7 +1,36 @@
 """
 ===============================================================================
-PharmaSupply-ML: Test Suite for FastAPI Serving Module
+PharmaSupply-ML: Test Suite for FastAPI Serving & Inventory Decision Service
 ===============================================================================
+
+EDUCATIONAL & MLOPS PURPOSE:
+----------------------------
+This test module serves as a practical guide for learning MLOps testing best
+practices using pytest and FastAPI's TestClient.
+
+In a production MLOps pipeline, model serving is not just about producing a
+raw prediction; it encompasses business logic, health checks, data quality
+validation, and operational alert routing.
+
+Key Testing Concepts Demonstrated:
+1. Endpoint Coverage:
+   Ensures that every API route (/model/health, /stores, /stores/{id}/alerts,
+   /features/{store}/{product}, /predict) behaves according to specification.
+
+2. Schema & Contract Validation (Data Quality Guardrails):
+   Verifies that Pydantic models automatically enforce valid input boundaries
+   (e.g., rejecting negative stock levels with HTTP 422 Unprocessable Entity).
+
+3. Graceful Degradation & Dependency Mocking:
+   Uses unittest.mock.patch to simulate scenarios where the ML model artifact
+   is uninitialized or missing, ensuring the API responds with an explicit
+   HTTP 503 Service Unavailable status instead of crashing unexpected.
+
+4. Train-Serve Parity & Integration Verification:
+   Validates that the API correctly handles input features matching the
+   schema required by the trained XGBoost model.
+
+Author: PharmaSupply-ML Team
 """
 
 import os
@@ -10,7 +39,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-# Ajout du dossier racine au path pour importer src.api
+# Add the project root directory to sys.path to allow absolute imports of src.api
 sys.path.append(
     os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..")
@@ -19,10 +48,10 @@ sys.path.append(
 
 from src.api import app
 
+# Initialize the lightweight TestClient for FastApi routing inspection
 client = TestClient(app)
 
-
-# Payload de test valide aligné sur PredictionInput (objet unique)
+# Standard valid payload mirroring PredictionInput schema requirements
 VALID_PAYLOAD = {
     "store_id": "1",
     "product_id": "MED_001",
@@ -39,36 +68,102 @@ VALID_PAYLOAD = {
 }
 
 
-def test_root_endpoint():
-    """Vérifie que la documentation ou les routes de base répondent correctement."""
-    response = client.get("/")
-    # FastAPI renvoie 404 sur la racine par défaut sauf si défini,
-    # testons plutôt un endpoint de données comme /stores
+def test_model_health():
+    """
+    Validates the model health endpoint.
+    Ensures that health status and human-readable operational messages
+    are correctly exposed for front-end interface consumption.
+    """
+    response = client.get("/model/health")
+    assert response.status_code == 200
+    data = response.json()
+    assert "status" in data
+    assert "message" in data
+    assert data["status"] in [
+        "STABLE",
+        "WARNING",
+        "CRITICAL",
+    ]
+
+
+def test_get_stores():
+    """
+    Validates store list retrieval.
+    Ensures that the database fetch endpoint returns a structured list of stores.
+    """
     response = client.get("/stores")
     assert response.status_code == 200
     data = response.json()
     assert "stores" in data
+    assert isinstance(data["stores"], list)
+
+
+def test_get_products():
+    """
+    Validates product catalog retrieval for a given store.
+    Checks that valid product identifiers are returned in list format.
+    """
+    response = client.get("/stores/1/products")
+    assert response.status_code == 200
+    data = response.json()
+    assert "products" in data
+    assert isinstance(data["products"], list)
+
+
+def test_get_store_alerts():
+    """
+    Validates the multi-level operational alert engine.
+    Ensures that parameter misconfigurations, stockout/expiry risks,
+    and model drift alerts are formatted into a prioritized list.
+    """
+    response = client.get("/stores/1/alerts")
+    assert response.status_code == 200
+    data = response.json()
+    assert "store_id" in data
+    assert "model_status" in data
+    assert "alerts" in data
+    assert isinstance(data["alerts"], list)
+
+
+def test_get_latest_features():
+    """
+    Validates dynamic feature retrieval for specific store/product pairs.
+    Checks that lag variables and logistical constraints are correctly formatted.
+    """
+    response = client.get("/features/1/MED_001")
+    assert response.status_code == 200
+    data = response.json()
+    assert "stock_on_hand" in data
+    assert "lag_7" in data
 
 
 def test_predict_success():
-    """Vérifie qu'une requête valide renvoie une prédiction et un statut corrects."""
+    """
+    Validates inference execution under nominal operating conditions.
+    When the model artifact is loaded, verifies demand predictions
+    and replenishment quantity calculations enforcing MOQ and batch constraints.
+    """
     response = client.post("/predict", json=VALID_PAYLOAD)
 
-    # Si le modèle est chargé sur la machine de dev/CI
+    # If the XGBoost model artifact is loaded in the local/CI environment
     if response.status_code == 200:
         data = response.json()
-        assert data["store_id"] == "1"
-        assert data["product_id"] == "MED_001"
+        assert str(data["store_id"]) == "1"
+        assert str(data["product_id"]) == "MED_001"
         assert "predicted_demand" in data
         assert data["predicted_demand"] >= 0.0
         assert "order_quantity" in data
     else:
-        # Si le fichier .joblib n'est pas présent dans l'env de test
+        # Fallback assertion if model binary file is absent during headless test runs
         assert response.status_code == 503
 
 
 def test_predict_model_not_loaded():
-    """Simule l'absence du modèle et vérifie le renvoi du code HTTP 503."""
+    """
+    Simulates uninitialized model state using mock patching.
+    Ensures the service returns an explicit HTTP 503 status code
+    when the model binary is unavailable in memory.
+    """
     with patch("src.api.loaded_model", None):
         response = client.post(
             "/predict", json=VALID_PAYLOAD
@@ -81,11 +176,15 @@ def test_predict_model_not_loaded():
 
 
 def test_predict_invalid_schema():
-    """Vérifie que Pydantic rejette un payload invalide (ex: stock négatif)."""
+    """
+    Validates Pydantic schema guardrails.
+    Confirms that invalid business values (e.g., negative stock levels)
+    are intercepted and rejected with HTTP 422 before reaching model inference.
+    """
     invalid_payload = VALID_PAYLOAD.copy()
     invalid_payload[
         "stock_on_hand"
-    ] = -50.0  # Valeur négative interdite (ge=0)
+    ] = -50.0  # Invalid negative stock value
 
     response = client.post("/predict", json=invalid_payload)
     assert (

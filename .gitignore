@@ -28,4 +28,4 @@ __pycache__/
 !.env.example
 
 # Documentation locale / Notes
-JOURNAL.md
+logBook/

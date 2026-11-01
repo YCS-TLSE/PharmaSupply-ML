@@ -1,4 +1,4 @@
-name: pharma-supply-cursor
+name: pharma-supply
 channels:
   - conda-forge
   - defaults
@@ -26,3 +26,4 @@ dependencies:
       - streamlit==1.40.2
       - ruff==0.8.6
       - requests==2.32.3
+      - testcontainers[postgres]

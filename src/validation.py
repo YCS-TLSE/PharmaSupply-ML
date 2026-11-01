@@ -31,24 +31,26 @@ from sqlalchemy import create_engine, text
 from src.db_config import get_database_url
 
 
-def run_validation_and_clean() -> pd.DataFrame:
+def run_validation_and_clean(
+    input_df: pd.DataFrame = None,
+) -> pd.DataFrame:
     """
     Executes autonomous data quality checks, applies auto-corrections for minor
     anomalies, and blocks execution only on critical structural failures.
 
-    Returns:
-        pd.DataFrame: The cleaned and validated dataframe ready for downstream tasks.
-
-    Raises:
-        ValueError: If critical structural errors occur.
+    Accepts an optional input_df for unit testing purposes.
     """
-    engine = create_engine(get_database_url())
-
-    with engine.connect() as conn:
-        df = pd.read_sql(
-            text("SELECT * FROM raw_pharmaceutical_demand"),
-            con=conn,
-        )
+    if input_df is not None:
+        df = input_df.copy()
+    else:
+        engine = create_engine(get_database_url())
+        with engine.connect() as conn:
+            df = pd.read_sql(
+                text(
+                    "SELECT * FROM raw_pharmaceutical_demand"
+                ),
+                con=conn,
+            )
 
     print(
         f"🔍 Running autonomous quality gate on {len(df)} records..."

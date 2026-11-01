@@ -1,24 +1,28 @@
 """
 ===============================================================================
-PharmaSupply-ML: Demand Forecasting API Service
+PharmaSupply-ML: Demand Forecasting & Health Synchronization API Service
 ===============================================================================
 
-OBJECTIVE & USAGE:
-------------------
-This FastAPI service acts as the production serving layer for the pharmaceutical
-demand forecasting and inventory reordering pipeline. It provides:
-1. Dynamic Data Retrieval: Fetches available stores, product catalogues, and
-   recent operational features (including custom safety thresholds, batch size,
-   MOQ, shelf-life constraints, and critical expiry tracking for FEFO).
-2. Real-time Demand Inference: Loads the persistent XGBoost model artifact to
-   predict 7-day future demand based on sliding windows and operational context.
-3. Intelligent Supply Chain Replenishment: Computes projected stock levels, evaluates
-   dynamic safety thresholds against supplier lead times, and calculates robust
-   replenishment quantities enforcing MOQ, packaging batch multiples, and shelf-life limits.
-4. Model Health Synchronization: Reads model status flags (STABLE, WARNING, CRITICAL)
-   synchronized from Evidently AI drift monitoring batches.
-5. Operational Audit & Alerts: Exposes a prioritized alerts endpoint (/stores/{store_id}/alerts)
-   structured around 3 operational exception levels (Parametrage, Rupture/Péremption FEFO, Drift).
+OBJECTIVE & ARCHITECTURE:
+-------------------------
+This FastAPI service acts as the central serving and business logic layer for
+the pharmaceutical demand forecasting and inventory management pipeline.
+
+Key Responsibilities:
+1. Model Health & Automated Notifications:
+   - Reads raw model status flags (STABLE, WARNING, CRITICAL) synchronized from
+     the background drift evaluation script ('model_status.txt').
+   - Automatically dispatches tailored email notifications to the technical support
+     team based on the severity level (moderate alert vs critical failure).
+   - Exposes a dedicated `/model/health` endpoint that provides both the current
+     model status and the standardized, reassuring business message ready for UI rendering.
+2. Dynamic Data Retrieval: Fetches stores, product catalogues, and recent operational
+   features (lags, safety thresholds, MOQ, packaging batch sizes, shelf-life).
+3. Real-time Inference & Replenishment: Loads the persistent XGBoost model to predict
+   7-day demand and calculates order quantities enforcing logistical constraints.
+4. Operational Audit & Alerts: Exposes a prioritized multi-level alert system
+   (/stores/{store_id}/alerts) covering parameter misconfigurations, stockout/expiry
+   risks (FEFO), and data drift.
 
 Author: YCS-TLSE
 Project: PharmaSupply-ML
@@ -27,7 +31,10 @@ Project: PharmaSupply-ML
 import logging
 import math
 import os
+import smtplib
 from contextlib import asynccontextmanager
+from email.message import EmailMessage
+from pathlib import Path
 from typing import List, Optional, Union
 
 import joblib
@@ -40,7 +47,7 @@ from pydantic import BaseModel, Field
 
 from src.db_config import get_database_url
 
-# Setup standard logging configuration for API runtime monitoring
+# Initialize standard logging configuration for runtime API tracking
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pharmasupply-api")
 
@@ -48,12 +55,17 @@ logger = logging.getLogger("pharmasupply-api")
 # =============================================================================
 # 1. CONFIGURATION & GLOBALS
 # =============================================================================
+ROOT_DIR = Path(__file__).resolve().parent.parent
+_DEFAULT_STATUS_FILE = ROOT_DIR / "model_status.txt"
+
 MODEL_PATH = os.getenv(
     "MODEL_PATH", "models/xgboost_pharma_demand.joblib"
 )
-
 STATUS_FILE_PATH = os.getenv(
-    "STATUS_FILE_PATH", "model_status.txt"
+    "STATUS_FILE_PATH",
+    str(_DEFAULT_STATUS_FILE)
+    if _DEFAULT_STATUS_FILE.exists()
+    else "model_status.txt",
 )
 
 loaded_model = None
@@ -78,27 +90,103 @@ def get_db_connection():
     return psycopg2.connect(get_database_url())
 
 
+def send_support_email(drift_status: str):
+    """
+    Sends an automated email notification to the technical support team when
+    the backend detects a model drift event (WARNING or CRITICAL).
+
+    Parameters:
+        drift_status (str): The current status of the model ('WARNING' or 'CRITICAL').
+    """
+    smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", 587))
+    sender_email = os.getenv(
+        "SENDER_EMAIL", "mlops-alert@pharmasupply.com"
+    )
+    receiver_email = os.getenv(
+        "RECEIVER_EMAIL", "support-tech@pharmasupply.com"
+    )
+    smtp_password = os.getenv("SMTP_PASSWORD", "")
+
+    # Skip sending if SMTP credentials are missing (local testing mode)
+    if not smtp_password:
+        logger.warning(
+            "⚠️ Missing SMTP password. Email dispatch skipped."
+        )
+        return
+
+    msg = EmailMessage()
+    if drift_status == "CRITICAL":
+        msg["Subject"] = (
+            "🚨 [ALERTE CRITIQUE] Instabilité majeure du modèle de prévision"
+        )
+        msg.set_content(
+            "Bonjour l'équipe support,\n\n"
+            "Le modèle de calcul PharmaSupply a atteint un seuil de dérive CRITIQUE.\n"
+            "Une action corrective ou un réentraînement est requis sous 24h.\n"
+        )
+    elif drift_status == "WARNING":
+        msg["Subject"] = (
+            "⚠️ [Alerte Modérée] Légère baisse de performance du modèle détectée"
+        )
+        msg.set_content(
+            "Bonjour l'équipe technique,\n\n"
+            "Le modèle présente une légère dérive (Statut: WARNING).\n"
+            "Une vigilance est requise et nos équipes travaillent à son optimisation.\n"
+        )
+    else:
+        return
+
+    msg["From"] = sender_email
+    msg["To"] = receiver_email
+
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(sender_email, smtp_password)
+            server.send_message(msg)
+        logger.info(
+            f"📧 Support notification email ('{drift_status}') successfully sent."
+        )
+    except Exception as e:
+        logger.error(
+            f"❌ Failed to dispatch support email: {e}"
+        )
+
+
 def get_model_status() -> str:
     """
-    Reads the model health status updated asynchronously by the Evidently AI
-    drift monitoring batch. Maps legacy or blank values to 'STABLE'.
+    Reads the raw model health status written by the background drift monitoring batch,
+    triggers automated support emails if drift is detected, and returns the active status.
+
+    Returns:
+        str: Active model health state ('STABLE', 'WARNING', or 'CRITICAL').
     """
+    status_val = "STABLE"
     if os.path.exists(STATUS_FILE_PATH):
         try:
             with open(STATUS_FILE_PATH, "r") as f:
-                status_val = f.read().strip()
-                if status_val == "OK":
-                    return "STABLE"
-                return (
-                    status_val if status_val else "STABLE"
-                )
+                content = f.read().strip()
+                if content in [
+                    "STABLE",
+                    "WARNING",
+                    "CRITICAL",
+                ]:
+                    status_val = content
+                elif content == "OK":
+                    status_val = "STABLE"
         except Exception:
-            return "STABLE"
-    return "STABLE"
+            status_val = "STABLE"
+
+    # Automatically dispatch support notification based on active status
+    if status_val in ["WARNING", "CRITICAL"]:
+        send_support_email(status_val)
+
+    return status_val
 
 
 def normalize_store_id(store_id: str) -> List[str]:
-    """Generates possible query variants for store IDs (e.g., '1', 'STORE_001')."""
+    """Generates query variants for store IDs to ensure robust DB matching (e.g., '1', 'STORE_001')."""
     s_id = str(store_id).strip()
     candidates = [s_id]
     if s_id.isdigit():
@@ -197,6 +285,11 @@ class StoreAlertsOutput(BaseModel):
     alerts: List[AlertItem]
 
 
+class ModelHealthOutput(BaseModel):
+    status: str
+    message: str
+
+
 # =============================================================================
 # 3. LIFESPAN MANAGEMENT
 # =============================================================================
@@ -235,6 +328,38 @@ app = FastAPI(
 # =============================================================================
 # 4. ENDPOINTS
 # =============================================================================
+@app.get(
+    "/model/health",
+    response_model=ModelHealthOutput,
+    tags=["Audit & Alerts"],
+)
+async def get_model_health():
+    """
+    Exposes the consolidated model health status and official business message.
+    Centralizes textual phrasing for the front-end interface.
+    """
+    current_status = get_model_status()
+
+    messages = {
+        "STABLE": "🟢 STABLE — Le modèle de prévision est fiable",
+        "WARNING": (
+            "🟠 WARNING —  Performance du modèle sous surveillance : nous vous"
+            " invitons à considérer les résultats ci-dessous avec une vigilance renforcée. Nos équipes optimisent le système."
+        ),
+        "CRITICAL": (
+            "🔴 CRITICAL — Alerte critique sur le modèle de prévision, nous vous invitons à considérer les résultats ci dessous avec une extrême vigilance, le"
+            " support client vous contactera sous 24h."
+        ),
+    }
+
+    return ModelHealthOutput(
+        status=current_status,
+        message=messages.get(
+            current_status, messages["STABLE"]
+        ),
+    )
+
+
 @app.get(
     "/stores",
     response_model=StoresOutput,
@@ -304,11 +429,11 @@ async def get_products(store_id: str):
 )
 async def get_store_alerts(store_id: str):
     """
-    Analyse les stocks, détecte les anomalies et trie les produits selon la hiérarchie
-    d'urgence opérationnelle du plan directeur :
-    1. 🔴 [1. PARAMÉTRAGE] Stock de sécurité inadapté (Urgence absolue).
-    2. 🟠 [2. RUPTURE & PÉREMPTION] Risque de rupture et lots proches de la péremption (FEFO).
-    3. ⚠️ [3. DÉRIVE DU MODÈLE / DRIFT] Instabilité de l'IA (Alerte de fond).
+    Evaluates inventory status, identifies anomalies, and ranks items according to
+    the operational priority hierarchy:
+    1. 🔴 Level 1 (PARAMETRAGE): Inadequate safety thresholds (High priority).
+    2. 🟠 Level 2 (RUPTURE_PEREMPTION): Stockout risks and near-expiry FEFO batches.
+    3. ⚠️ Level 3 (DRIFT): Global model drift warnings.
     """
     current_model_status = get_model_status()
     alerts: List[AlertItem] = []
@@ -343,7 +468,7 @@ async def get_store_alerts(store_id: str):
                     else 365
                 )
 
-                # Niveau 1 : Paramétrage
+                # Level 1: Parameter Misconfigurations
                 if p_id == "MED_003" or safety < (
                     demand * 1.5
                 ):
@@ -353,7 +478,10 @@ async def get_store_alerts(store_id: str):
                             level=1,
                             category="PARAMETRAGE",
                             severity="RED",
-                            message=f"Stock de sécurité critique/inadapté ({safety} vs demande). Risque de sous-dimensionnement.",
+                            message=(
+                                f"Stock de sécurité critique/inadapté ({safety}"
+                                " vs demande). Risque de sous-dimensionnement."
+                            ),
                             current_stock=stock,
                             critical_expiry_days=expiry_days,
                             safety_threshold=safety,
@@ -366,14 +494,17 @@ async def get_store_alerts(store_id: str):
                             level=1,
                             category="PARAMETRAGE",
                             severity="RED",
-                            message=f"Sur-immobilisation de stock détectée (seuil excessif à {safety}). Paramétrage à réviser.",
+                            message=(
+                                "Sur-immobilisation de stock détectée (seuil"
+                                f" excessif à {safety}). Paramétrage à réviser."
+                            ),
                             current_stock=stock,
                             critical_expiry_days=expiry_days,
                             safety_threshold=safety,
                         )
                     )
 
-                # Niveau 2 : Rupture & Péremption (FEFO)
+                # Level 2: Stockout & FEFO Expiry Risks
                 if expiry_days < 30:
                     alerts.append(
                         AlertItem(
@@ -381,7 +512,11 @@ async def get_store_alerts(store_id: str):
                             level=2,
                             category="RUPTURE_PEREMPTION",
                             severity="ORANGE",
-                            message=f"Lot critique proche de la péremption ({expiry_days} jours restants). Action FEFO requise.",
+                            message=(
+                                "Lot critique proche de la péremption"
+                                f" ({expiry_days} jours restants). Action FEFO"
+                                " requise."
+                            ),
                             current_stock=stock,
                             critical_expiry_days=expiry_days,
                             safety_threshold=safety,
@@ -394,7 +529,10 @@ async def get_store_alerts(store_id: str):
                             level=2,
                             category="RUPTURE_PEREMPTION",
                             severity="ORANGE",
-                            message=f"Risque de rupture imminent (Stock actuel: {stock} < Seuil/Demande).",
+                            message=(
+                                "Risque de rupture imminent (Stock actuel:"
+                                f" {stock} < Seuil/Demande)."
+                            ),
                             current_stock=stock,
                             critical_expiry_days=expiry_days,
                             safety_threshold=safety,
@@ -409,7 +547,7 @@ async def get_store_alerts(store_id: str):
         if conn:
             conn.close()
 
-    # Niveau 3 : Drift
+    # Level 3: Model Drift Warning
     if current_model_status in ["WARNING", "CRITICAL"]:
         alerts.append(
             AlertItem(
@@ -417,7 +555,10 @@ async def get_store_alerts(store_id: str):
                 level=3,
                 category="DRIFT",
                 severity="YELLOW",
-                message=f"Instabilité de l'IA détectée (Statut du modèle : {current_model_status}). Rapport Evidently à inspecter.",
+                message=(
+                    "Instabilité de l'IA détectée (Statut du modèle :"
+                    f" {current_model_status}). Rapport Evidently à inspecter."
+                ),
                 current_stock=0.0,
                 critical_expiry_days=None,
                 safety_threshold=0.0,
@@ -439,7 +580,7 @@ async def get_store_alerts(store_id: str):
 async def get_latest_features(
     store_id: str, product_id: str
 ):
-    """Auto-fetches the latest recorded operational features, historical lags, and logistical constraints."""
+    """Auto-fetches recent features, lag attributes, and logistical constraints for a given store/product."""
     conn = None
     try:
         conn = get_db_connection()
@@ -555,8 +696,8 @@ async def get_latest_features(
 )
 async def predict(payload: PredictionInput):
     """
-    Performs 7-day demand forecasting and calculates robust supply chain
-    reorder quantities enforcing MOQ, packaging batch sizes, and shelf-life constraints.
+    Performs demand inference and calculates inventory reorder quantities
+    enforcing MOQ, packaging batch sizes, and shelf-life constraints.
     """
     if loaded_model is None:
         raise HTTPException(
@@ -589,7 +730,6 @@ async def predict(payload: PredictionInput):
             payload.stock_on_hand - predicted_demand
         )
 
-        # --- ADVANCED SUPPLY CHAIN LOGIC WITH LOGISTICAL CONSTRAINTS ---
         daily_demand = (
             predicted_demand / 7.0
             if predicted_demand > 0
@@ -615,21 +755,16 @@ async def predict(payload: PredictionInput):
 
         order_quantity = 0
         if reorder_needed:
-            # Business rule: When a reorder is triggered, order at least 7 days of forecasted consumption
-            # or the volume needed to cover the safety stock deficit, whichever is greater.
             base_order_qty = max(
                 predicted_demand,
                 payload.safety_threshold - projected_stock,
             )
-
-            # Apply logistical constraints (Minimum Order Quantity and Packaging Batch Size)
             effective_qty = max(base_order_qty, payload.moq)
             bs = max(1, payload.batch_size)
             order_quantity = (
                 math.ceil(effective_qty / bs) * bs
             )
 
-            # Validate against shelf-life (expiry) constraints to avoid over-ordering stock that expires
             max_viable_demand = (
                 daily_demand * payload.shelf_life_days
             )

@@ -6,8 +6,8 @@ PharmaSupply-ML: Master MLOps Pipeline Orchestrator
 OBJECTIVE & USAGE:
 ------------------
 This master script orchestrates the end-to-end MLOps automation pipeline:
-1. MOCK / Test Configuration & Cleanup: Optional development reset block ensuring
-   a pristine environment by wiping obsolete local run artifacts before execution.
+1. Environment Initialization & Optional Cleanup: Supports modular artifact wiping
+   via '--clean' flag by delegating to 'scripts/clean_artifacts.py'.
 2. Infrastructure Validation: Ensures Docker, PostgreSQL (port 5432), and
    FastAPI (port 8000) environments are active and reachable.
 3. Ingestion Automation: Systematically regenerates synthetic records from scratch
@@ -31,8 +31,10 @@ Author: YCS-TLSE
 Project: PharmaSupply-ML
 """
 
+import argparse
 import json
 import logging
+import shutil
 import socket
 import subprocess
 import sys
@@ -42,6 +44,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from scripts.clean_artifacts import clean_artifacts
 from src.data.generate_data import build_pharma_dataset
 from src.explainability import ModelExplainer
 from src.features import create_features
@@ -56,16 +59,10 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
-# =============================================================================
-# MOCK BEGIN: Test Configuration & Mode
-# =============================================================================
-MOCK_RESET_MODE = True
-# =============================================================================
-# MOCK END
-# =============================================================================
 
-
-def is_port_open(host: str, port: int, timeout: float = 2.0) -> bool:
+def is_port_open(
+    host: str, port: int, timeout: float = 2.0
+) -> bool:
     """Utility function to check socket connection on a target port."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(timeout)
@@ -76,44 +73,74 @@ def is_port_open(host: str, port: int, timeout: float = 2.0) -> bool:
 
 def ensure_docker_running() -> None:
     """Verifies PostgreSQL (5432) and FastAPI (8000) availability and attempts auto-start if down."""
-    logging.info("Step 0: Checking Docker infrastructure availability...")
+    logging.info(
+        "Step 0: Checking Docker infrastructure availability..."
+    )
 
     pg_online = is_port_open("127.0.0.1", 5432)
     api_online = is_port_open("127.0.0.1", 8000)
 
     if pg_online and api_online:
-        logging.info("PostgreSQL (5432) and FastAPI (8000) services are online.")
+        logging.info(
+            "PostgreSQL (5432) and FastAPI (8000) services are online."
+        )
         return
 
-    logging.info("One or more services unreachable. Attempting to start Docker Compose...")
+    logging.info(
+        "One or more services unreachable. Attempting to start Docker Compose..."
+    )
     try:
-        subprocess.run(["docker", "compose", "up", "-d"], check=True)
+        # Prevent Docker from mounting a non-existent file as a directory
+        status_path = Path("model_status.txt")
+        if status_path.is_dir():
+            shutil.rmtree(status_path)
+        if not status_path.exists():
+            status_path.write_text("STABLE")
+
+        subprocess.run(
+            ["docker", "compose", "up", "-d"], check=True
+        )
 
         for _ in range(15):
             if is_port_open("127.0.0.1", 8000):
-                logging.info("Docker Compose services started and API is responsive.")
+                logging.info(
+                    "Docker Compose services started and API is responsive."
+                )
                 return
             time.sleep(1)
 
     except Exception as e:
-        logging.error(f"Failed to initialize Docker infrastructure: {e}")
+        logging.error(
+            f"Failed to initialize Docker infrastructure: {e}"
+        )
         sys.exit(1)
 
 
 def reload_api_service() -> None:
     """Restarts the API container so it reloads the newly trained model joblib file."""
-    logging.info("Restarting FastAPI service to load updated model artifact...")
+    logging.info(
+        "Restarting FastAPI service to load updated model artifact..."
+    )
     try:
-        subprocess.run(["docker", "compose", "restart", "api"], check=True)
+        subprocess.run(
+            ["docker", "compose", "restart", "api"],
+            check=True,
+        )
         time.sleep(2)
-        logging.info("FastAPI service successfully restarted.")
+        logging.info(
+            "FastAPI service successfully restarted."
+        )
     except Exception as e:
-        logging.warning(f"Could not restart API container automatically: {e}")
+        logging.warning(
+            f"Could not restart API container automatically: {e}"
+        )
 
 
 def verify_api_serving() -> None:
     """Tests the API /predict and /alerts endpoints to confirm runtime integrity with FEFO constraints."""
-    logging.info("Step 6: Verifying REST API serving inference (/predict) and audit alerts (/alerts)...")
+    logging.info(
+        "Step 6: Verifying REST API serving inference (/predict) and audit alerts (/alerts)..."
+    )
 
     url_predict = "http://localhost:8000/predict"
     url_alerts = "http://localhost:8000/stores/1/alerts"
@@ -142,28 +169,42 @@ def verify_api_serving() -> None:
             headers={"Content-Type": "application/json"},
         )
 
-        with urllib.request.urlopen(req, timeout=5) as response:
+        with urllib.request.urlopen(
+            req, timeout=5
+        ) as response:
             if response.status == 200:
-                result = json.loads(response.read().decode("utf-8"))
+                result = json.loads(
+                    response.read().decode("utf-8")
+                )
                 logging.info(
                     f"API Predict Response Received: Predicted Demand = {result.get('predicted_demand'):.2f} | "
                     f"Reorder Needed = {result.get('reorder_needed')} | Model Status = {result.get('model_status')}"
                 )
             else:
-                logging.error(f"API Predict returned non-200 status code: {response.status}")
+                logging.error(
+                    f"API Predict returned non-200 status code: {response.status}"
+                )
                 sys.exit(1)
 
         # 2. Test Alerts Endpoint (Audit & FEFO)
-        with urllib.request.urlopen(url_alerts, timeout=5) as response_alerts:
+        with urllib.request.urlopen(
+            url_alerts, timeout=5
+        ) as response_alerts:
             if response_alerts.status == 200:
-                alerts_res = json.loads(response_alerts.read().decode("utf-8"))
+                alerts_res = json.loads(
+                    response_alerts.read().decode("utf-8")
+                )
                 logging.info(
                     f"API Alerts Response Received: Store {alerts_res.get('store_id')} | "
                     f"Total active alerts = {len(alerts_res.get('alerts', []))}"
                 )
-                logging.info("Step 6 SUCCESS: REST API serving and alerts validation completed successfully.")
+                logging.info(
+                    "Step 6 SUCCESS: REST API serving and alerts validation completed successfully."
+                )
             else:
-                logging.error(f"API Alerts returned non-200 status code: {response_alerts.status}")
+                logging.error(
+                    f"API Alerts returned non-200 status code: {response_alerts.status}"
+                )
                 sys.exit(1)
 
     except Exception as e:
@@ -171,61 +212,77 @@ def verify_api_serving() -> None:
         sys.exit(1)
 
 
-def main() -> None:
+def main(clean_first: bool = False) -> None:
     """Executes the full end-to-end MLOps pipeline sequentially with success tracing and fail-fast handling."""
-    logging.info("==========================================")
+    logging.info(
+        "=========================================="
+    )
     logging.info("STARTING PHARMASUPPLY MLOPS PIPELINE")
-    logging.info("==========================================")
+    logging.info(
+        "=========================================="
+    )
 
-    if MOCK_RESET_MODE:
-        logging.info("Cleaning previous local run artifacts to ensure a pristine start...")
-        obsolete_artifacts = [
-            "model_status.txt",
-            "reports/feature_weights.json",
-            "reports/drift_report.html",
-            "models/xgboost_pharma_demand.joblib",
-        ]
-        for artifact in obsolete_artifacts:
-            p = Path(artifact)
-            if p.exists():
-                p.unlink()
-                logging.info(f"   - Removed obsolete artifact: {artifact}")
+    if clean_first:
+        logging.info(
+            "Pre-run cleanup requested: delegating to scripts.clean_artifacts..."
+        )
+        clean_artifacts(
+            reset_status=True,
+            include_figures=False,
+            verbose=True,
+        )
 
     # Step 0: Infrastructure Check & Startup
     try:
         ensure_docker_running()
-        logging.info("Step 0 SUCCESS: Infrastructure check & startup completed.")
+        logging.info(
+            "Step 0 SUCCESS: Infrastructure check & startup completed."
+        )
     except Exception as e:
         logging.error(f"Pipeline failed at Step 0: {e}")
         sys.exit(1)
 
     # Step 1: Automated Data Ingestion & Systematic Regeneration
     try:
-        logging.info("Step 1: Regenerating and ingesting raw data (with critical expiry tracking) into PostgreSQL...")
-        raw_data_path = Path("data/pharmaceutical_demand_row.csv")
+        logging.info(
+            "Step 1: Regenerating and ingesting raw data (with critical expiry tracking) into PostgreSQL..."
+        )
+        raw_data_path = Path(
+            "data/pharmaceutical_demand_row.csv"
+        )
 
         df_pharma = build_pharma_dataset()
-        raw_data_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_data_path.parent.mkdir(
+            parents=True, exist_ok=True
+        )
         df_pharma.to_csv(raw_data_path, index=False)
 
         ingest_csv_to_postgres(
             file_path=raw_data_path,
             table_name="raw_pharmaceutical_demand",
         )
-        logging.info("Step 1 SUCCESS: Raw dataset with FEFO parameters successfully regenerated and ingested into PostgreSQL.")
+        logging.info(
+            "Step 1 SUCCESS: Raw dataset with FEFO parameters successfully regenerated and ingested into PostgreSQL."
+        )
     except Exception as e:
         logging.error(f"Pipeline failed at Step 1: {e}")
         sys.exit(1)
 
     # Step 2: Autonomous Data Quality Gate & Feature Engineering
     try:
-        logging.info("Step 2: Running Autonomous Data Quality Gate & engineering features...")
+        logging.info(
+            "Step 2: Running Autonomous Data Quality Gate & engineering features..."
+        )
         df_raw = run_validation_and_clean()
         df_raw["date"] = pd.to_datetime(df_raw["date"])
 
         df_processed = create_features(df_raw)
-        logging.info(f"Dataset successfully validated and prepared. Total rows: {len(df_processed)}")
-        logging.info("Step 2 SUCCESS: Data Quality Gate and feature engineering completed.")
+        logging.info(
+            f"Dataset successfully validated and prepared. Total rows: {len(df_processed)}"
+        )
+        logging.info(
+            "Step 2 SUCCESS: Data Quality Gate and feature engineering completed."
+        )
     except Exception as e:
         logging.error(f"Pipeline failed at Step 2: {e}")
         sys.exit(1)
@@ -233,40 +290,61 @@ def main() -> None:
     # Step 3: Model Training & Persistence
     try:
         logging.info("Step 3: Training XGBoost model...")
-        model, metrics, X_test, y_test = train_xgboost(df_processed)
-        logging.info(f"Model trained successfully. Test MAE: {metrics['mae']:.4f}")
+        model, metrics, X_test, y_test = train_xgboost(
+            df_processed
+        )
+        logging.info(
+            f"Model trained successfully. Test MAE: {metrics['mae']:.4f}"
+        )
 
         reload_api_service()
-        logging.info("Step 3 SUCCESS: XGBoost model trained, evaluated, and deployed to memory.")
+        logging.info(
+            "Step 3 SUCCESS: XGBoost model trained, evaluated, and deployed to memory."
+        )
     except Exception as e:
         logging.error(f"Pipeline failed at Step 3: {e}")
         sys.exit(1)
 
     # Step 4: Explainability (SHAP & Dynamic Weight Export)
     try:
-        logging.info("Step 4: Generating SHAP feature importance report and exporting weights...")
+        logging.info(
+            "Step 4: Generating SHAP feature importance report and exporting weights..."
+        )
         explainer = ModelExplainer(
             model_path="models/xgboost_pharma_demand.joblib",
             output_dir="reports/figures",
         )
-        explainer.fit_explainer(X_test, threshold=300, sample_size=200, n_repeats=1)
+        explainer.fit_explainer(
+            X_test,
+            threshold=300,
+            sample_size=200,
+            n_repeats=1,
+        )
         explainer.generate_global_plots(max_display=10)
-        explainer.generate_local_breakdown(sample_index=0, max_display=10)
+        explainer.generate_local_breakdown(
+            sample_index=0, max_display=10
+        )
         explainer.export_shap_to_csv()
         explainer.export_feature_weights()
-        logging.info("Step 4 SUCCESS: SHAP global/local plots and feature weights JSON successfully generated.")
+        logging.info(
+            "Step 4 SUCCESS: SHAP global/local plots and feature weights JSON successfully generated."
+        )
     except Exception as e:
         logging.error(f"Pipeline failed at Step 4: {e}")
         sys.exit(1)
 
     # Step 5: Weighted Data Drift Monitoring (Evidently AI)
     try:
-        logging.info("Step 5: Running Evidently AI weighted drift monitoring...")
+        logging.info(
+            "Step 5: Running Evidently AI weighted drift monitoring..."
+        )
         run_drift_monitoring(
             df=df_processed,
             output_html_path="reports/drift_report.html",
         )
-        logging.info("Step 5 SUCCESS: Weighted drift monitoring executed and HTML report generated.")
+        logging.info(
+            "Step 5 SUCCESS: Weighted drift monitoring executed and HTML report generated."
+        )
     except Exception as e:
         logging.error(f"Pipeline failed at Step 5: {e}")
         sys.exit(1)
@@ -274,17 +352,42 @@ def main() -> None:
     # Step 6: REST API Inference & Alerts Validation
     verify_api_serving()
 
-    logging.info("==========================================")
+    logging.info(
+        "=========================================="
+    )
     logging.info("PIPELINE EXECUTED SUCCESSFULLY!")
     logging.info("Generated Artifacts:")
-    logging.info(" - Model artifact      : models/xgboost_pharma_demand.joblib")
-    logging.info(" - Feature weights     : reports/feature_weights.json")
-    logging.info(" - SHAP figures        : reports/figures/")
-    logging.info(" - Drift report        : reports/drift_report.html")
-    logging.info(" - API Prediction Endpoint : http://localhost:8000/predict")
-    logging.info(" - API Alerts Endpoint     : http://localhost:8000/stores/1/alerts")
-    logging.info("==========================================")
+    logging.info(
+        " - Model artifact      : models/xgboost_pharma_demand.joblib"
+    )
+    logging.info(
+        " - Feature weights     : reports/feature_weights.json"
+    )
+    logging.info(
+        " - SHAP figures        : reports/figures/"
+    )
+    logging.info(
+        " - Drift report        : reports/drift_report.html"
+    )
+    logging.info(
+        " - API Prediction Endpoint : http://localhost:8000/predict"
+    )
+    logging.info(
+        " - API Alerts Endpoint     : http://localhost:8000/stores/1/alerts"
+    )
+    logging.info(
+        "=========================================="
+    )
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="PharmaSupply-ML: Master MLOps Pipeline Orchestrator"
+    )
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="Clean previous run artifacts before executing the pipeline (calls scripts/clean_artifacts.py).",
+    )
+    args = parser.parse_args()
+    main(clean_first=args.clean)
