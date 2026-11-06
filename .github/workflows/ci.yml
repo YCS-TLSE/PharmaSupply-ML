@@ -54,7 +54,7 @@ jobs:
 
       # Fail the build on fixable CRITICAL/HIGH vulnerabilities.
       - name: Trivy scan API image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: pharmasupply-api:${{ github.sha }}
           format: table
@@ -62,7 +62,7 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
       - name: Trivy scan dashboard image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: pharmasupply-dashboard:${{ github.sha }}
           format: table
