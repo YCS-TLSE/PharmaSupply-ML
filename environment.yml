@@ -31,14 +31,16 @@ dependencies:
   - pip
   - pip:
       # REST API and contracts.
-      - fastapi==0.115.6
+      - fastapi==0.162.0
+      - starlette==1.10.0
       - uvicorn==0.32.1
       - pydantic==2.10.3
       - python-dotenv==1.0.1
 
       # Drift monitoring, dashboard and HTTP client.
       - evidently==0.7.14
-      - streamlit==1.40.2
+      - streamlit==1.67.0
+      - pillow==13.0.0
       - requests==2.32.3
 
       # Quality and test tooling.
@@ -46,6 +48,8 @@ dependencies:
       - testcontainers[postgres]==4.15.0
       - pytest-cov==6.0.0
       - httpx==0.28.1
+      # Build tooling: setuptools 84 vendors patched wheel/jaraco.context.
+      - setuptools==84.2.1
 
       # Database migrations, experiment tracking and observability.
       - alembic==1.14.0

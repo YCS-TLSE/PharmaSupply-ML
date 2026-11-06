@@ -217,7 +217,7 @@ Cette séparation évite d'installer MLflow, Alembic, les notebooks et les outil
 
 Une dépendance non épinglée est une promesse de build différent demain. Le projet utilise deux niveaux :
 
-- des versions exactes pour les composants sensibles (`fastapi==0.115.6`, `pydantic==2.10.3`, `mlflow==2.19.0`) ;
+- des versions exactes pour les composants sensibles (`fastapi==0.162.0`, `pydantic==2.10.3`, `mlflow==2.19.0`) ;
 - des bornes pour les bibliothèques qui évoluent rapidement (`xgboost>=2.1,<3`, `sqlalchemy>=2.0,<2.1`).
 
 Le `pyproject.toml` fixe aussi la version cible de Python (`py311`) et la longueur de ligne pour Ruff. Le but n'est pas de figer pour figer. Le but est de rendre un incident reproductible.
@@ -759,7 +759,7 @@ This separation avoids installing MLflow, Alembic, notebooks and test tooling in
 
 An unpinned dependency is a promise of a different build tomorrow. The project uses two levels:
 
-- exact versions for sensitive components (`fastapi==0.115.6`, `pydantic==2.10.3`, `mlflow==2.19.0`);
+- exact versions for sensitive components (`fastapi==0.162.0`, `pydantic==2.10.3`, `mlflow==2.19.0`);
 - bounds for fast-moving libraries (`xgboost>=2.1,<3`, `sqlalchemy>=2.0,<2.1`).
 
 `pyproject.toml` also fixes the Python target (`py311`) and the Ruff line length. The goal is not to freeze for the sake of freezing. The goal is to make an incident reproducible.

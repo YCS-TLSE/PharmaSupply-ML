@@ -5,7 +5,12 @@
 # pandas for light tabular handling, and python-dotenv to read the same
 # environment file as the API.
 # =============================================================================
-streamlit==1.40.2
+streamlit==1.67.0
+# Pillow 13.0.0 fixes the CVEs flagged by the dashboard image scan.
+pillow==13.0.0
 requests==2.32.3
 pandas==1.5.3
 python-dotenv==1.0.1
+
+# setuptools 84 vendors wheel 0.46.3 and jaraco.context 6.1.0 (patched).
+setuptools==84.2.1

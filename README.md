@@ -82,7 +82,7 @@ src/config.py              # source de vérité des constantes et variables d'en
 
 | Domaine | Technologies |
 |---|---|
-| **Serving API** | FastAPI 0.115, Pydantic v2, Uvicorn, architecture routers/services/repositories |
+| **Serving API** | FastAPI 0.162, Pydantic v2, Uvicorn, architecture routers/services/repositories |
 | **Données** | PostgreSQL 16, SQLAlchemy 2.x (pool + `pool_pre_ping`), Alembic, ingestion UPSERT sur clé métier `(store_id, product_id, date)` |
 | **ML** | XGBoost 2.1, scikit-learn 1.5, joblib, parité train/serve via un constructeur de features unique |
 | **Explicabilité & drift** | SHAP 0.46, export `reports/feature_weights.json`, Evidently 0.7 (holdout offline + drift production sur logs agrégés) |
@@ -366,7 +366,7 @@ src/config.py              # single source of truth for constants and environmen
 
 | Area | Technologies |
 |---|---|
-| **Serving API** | FastAPI 0.115, Pydantic v2, Uvicorn, routers/services/repositories |
+| **Serving API** | FastAPI 0.162, Pydantic v2, Uvicorn, routers/services/repositories |
 | **Data** | PostgreSQL 16, SQLAlchemy 2.x (pool + `pool_pre_ping`), Alembic, UPSERT on `(store_id, product_id, date)` |
 | **ML** | XGBoost 2.1, scikit-learn 1.5, joblib, shared feature builder for train/serve parity |
 | **Explainability & drift** | SHAP 0.46, `reports/feature_weights.json`, Evidently 0.7 (offline holdout + production logs) |
