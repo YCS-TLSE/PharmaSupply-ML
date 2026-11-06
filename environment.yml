@@ -43,7 +43,7 @@ dependencies:
 
       # Quality and test tooling.
       - ruff==0.8.6
-      - testcontainers[postgres]
+      - testcontainers[postgres]==4.15.0
       - pytest-cov==6.0.0
       - httpx==0.28.1
 

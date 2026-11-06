@@ -23,6 +23,10 @@ ipywidgets>=8.1,<9
 pytest>=8.3,<9
 pytest-cov==6.0.0
 httpx==0.28.1
+# Integration test dependency (Testcontainers PostgreSQL). Imported at module
+# collection time by tests/test_ingestion_integration.py, so it must be
+# installed even when running `pytest -m "not integration"`.
+testcontainers[postgres]==4.15.0
 
 # REST API.
 fastapi==0.115.6
