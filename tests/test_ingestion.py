@@ -83,10 +83,14 @@ def test_ingest_csv_file_not_found(capsys):
     assert "not found" in captured.out
 
 
+@patch("src.ingestion.execute_values")
 @patch("src.ingestion.get_db_engine")
 @patch("src.ingestion.inspect")
 def test_ingest_csv_normalization_and_staging(
-    mock_inspect, mock_get_engine, tmp_path
+    mock_inspect,
+    mock_get_engine,
+    mock_execute_values,
+    tmp_path,
 ):
     """
     Validates CSV data normalization and database staging workflow using mocks.
@@ -137,8 +141,9 @@ def test_ingest_csv_normalization_and_staging(
         csv_file, "raw_pharmaceutical_demand"
     )
 
-    # 4. Verify that table presence was checked and truncation was triggered
+    # 4. Verify that table presence was checked and the UPSERT ran
     mock_inspector.has_table.assert_called_once_with(
         "raw_pharmaceutical_demand"
     )
     mock_engine.begin.assert_called()
+    mock_execute_values.assert_called_once()

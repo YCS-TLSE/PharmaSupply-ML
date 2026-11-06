@@ -1,4 +1,33 @@
-"""Database settings from the environment. Secrets have no in-code fallbacks."""
+"""
+===============================================================================
+PharmaSupply-ML: Database URL Resolution
+===============================================================================
+
+PURPOSE
+-------
+Resolve the PostgreSQL connection URL from environment variables with no
+hard-coded secret fallback.
+
+RESPONSIBILITIES
+----------------
+* Load the repository ``.env`` file once at import time.
+* Prefer an explicit ``DATABASE_URL`` when provided.
+* Otherwise build the URL from ``POSTGRES_USER``, ``POSTGRES_PASSWORD`` and
+  ``POSTGRES_DB``; host and port may safely default to localhost/5432.
+* Raise a clear ``RuntimeError`` only when the URL is actually requested, so
+  importing the API does not require a live database.
+
+INPUTS / OUTPUTS
+----------------
+Inputs: process environment and ``.env``.
+Output: a SQLAlchemy-compatible PostgreSQL URL string.
+
+ARCHITECTURE INTEGRATION
+------------------------
+Used by ``src.repositories.database``, ``src.ingestion``, ``src.validation``
+and ``alembic/env.py``. Secrets must be injected by the runtime platform in
+production; this module intentionally has no in-code credentials.
+"""
 
 from __future__ import annotations
 
@@ -10,9 +39,15 @@ from dotenv import load_dotenv
 ROOT_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(dotenv_path=ROOT_DIR / ".env")
 
-_REQUIRED = ("POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB")
+_REQUIRED = (
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
+    "POSTGRES_DB",
+)
 
 
+# Public resolver. Raises lazily so unit tests can import modules without a
+# database, and fails with an actionable message when secrets are missing.
 def get_database_url() -> str:
     """Return DATABASE_URL, or build it from POSTGRES_* vars.
 
@@ -24,7 +59,9 @@ def get_database_url() -> str:
     if explicit:
         return explicit
 
-    missing = [name for name in _REQUIRED if not os.getenv(name)]
+    missing = [
+        name for name in _REQUIRED if not os.getenv(name)
+    ]
     if missing:
         raise RuntimeError(
             "Missing required database environment variable(s): "

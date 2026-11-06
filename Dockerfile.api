@@ -1,41 +1,48 @@
-# ==============================================================================
-# PharmaSupply-ML: FastAPI Backend Dockerfile
-# ==============================================================================
-# CONTEXT & PURPOSE:
-# Containerizes the FastAPI inference, audit, and inventory replenishment service.
-# Bundles machine learning artifacts, database drivers, and Pydantic validation
-# schemas with full support for critical expiration tracking (FEFO) and drift alerts.
-# ==============================================================================
-
+# =============================================================================
+# PharmaSupply-ML: FastAPI Backend Image
+# =============================================================================
+# Multi-layer runtime image for the serving API:
+#   * pinned runtime dependencies (no notebooks, MLflow, Alembic or tests);
+#   * source code and model artifact copied into /app;
+#   * non-root user and liveness healthcheck.
+# The docker-compose stack bind-mounts src/, models/, reports/ and the status
+# file at runtime, but the image remains runnable standalone.
+# =============================================================================
 FROM python:3.11-slim
+
+# Deterministic Python behaviour inside the container.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
+# System dependencies required to build/use psycopg2 and for the healthcheck.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY environment.yml pyproject.toml ./
-RUN pip install --no-cache-dir \
-    fastapi \
-    uvicorn \
-    pydantic \
-    pandas \
-    numpy \
-    xgboost \
-    joblib \
-    scikit-learn \
-    python-dotenv \
-    psycopg2-binary \
-    streamlit \
-    requests \
-    evidently \
-    shap
+# Install only the pinned serving dependencies.
+COPY requirements.api.txt ./
+RUN pip install --no-cache-dir -r requirements.api.txt
 
+# Application code and the default model artifact.
 COPY src/ ./src/
 COPY models/ ./models/
 
+# Run as an unprivileged user with the same UID commonly used on the host so
+# bind-mounted volumes remain writable for the prediction log.
+RUN useradd --create-home --uid 1000 appuser \
+    && mkdir -p /app/reports \
+    && chown -R appuser:appuser /app
+USER appuser
+
 EXPOSE 8000
+
+# Liveness probe: lightweight, side-effect free, no database or SMTP access.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fsS http://localhost:8000/livez || exit 1
 
 CMD ["uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000"]

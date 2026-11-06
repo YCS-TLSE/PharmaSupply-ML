@@ -1,15 +1,19 @@
 # ==============================================================================
 # PharmaSupply-ML: Multi-Container MLOps Orchestration
 # ==============================================================================
-# CONTEXT & PURPOSE:
-# Orchestrates the production microservices architecture including:
-# - PostgreSQL database initialized with schemas supporting FEFO critical expiry.
-# - FastAPI backend serving demand forecasting, replenishment, and alerts.
-# - Streamlit dashboard providing the vertical top-to-bottom UI and control center.
-# - Shared persistence volumes for ML models (models/), health status (model_status.txt), and reports.
+# Three services share a single network:
+#   * postgres  — persistent staging database, initialized from sql/schema.sql.
+#   * api       — FastAPI serving layer, pooled DB access and model inference.
+#   * dashboard — Streamlit thin client consuming the API.
+# Bind mounts keep the model artifact, status file and reports synchronized
+# between the host pipeline and the containers.
 # ==============================================================================
 
 services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL: persistent staging storage for raw demand and logistics data.
+  # The SQL file is executed only when the data volume is initialized.
+  # ---------------------------------------------------------------------------
   postgres:
     image: postgres:16-alpine
     container_name: pharmasupply-db
@@ -26,11 +30,17 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./sql/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
     healthcheck:
+      # The API waits for this check before starting.
       test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}" ]
       interval: 5s
       timeout: 5s
       retries: 5
 
+  # ---------------------------------------------------------------------------
+  # FastAPI: inference, alerts and feature serving. The source code and model
+  # are bind-mounted so a pipeline run can refresh them without a rebuild; the
+  # pipeline may still rebuild the image when dependencies change.
+  # ---------------------------------------------------------------------------
   api:
     build:
       context: .
@@ -40,25 +50,32 @@ services:
     env_file:
       - .env
     environment:
+      # Inside compose, the database host is the service name, not localhost.
       POSTGRES_HOST: pharmasupply-db
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pharmasupply-db:5432/${POSTGRES_DB}
     ports:
       - "8000:8000"
     volumes:
       - ./src:/app/src
-      - ./models:/app/models # Shared volume for dynamic ML model artifact updates (Train/Serve decoupling)
-      - ./model_status.txt:/app/model_status.txt # Synchronization of model drift health status
-      - ./reports:/app/reports # Sharing Evidently AI monitoring reports
+      - ./models:/app/models # Dynamic model artifact updates (train/serve decoupling)
+      - ./model_status.txt:/app/model_status.txt # Shared drift health status
+      - ./reports:/app/reports # Evidently reports and production prediction log
     depends_on:
       postgres:
         condition: service_healthy
 
+  # ---------------------------------------------------------------------------
+  # Streamlit: business-facing dashboard. It only talks HTTP to the API and
+  # reads the shared status file as an offline fallback.
+  # ---------------------------------------------------------------------------
   dashboard:
     build:
       context: .
       dockerfile: Dockerfile.dashboard
     container_name: pharmasupply-dashboard
     restart: always
+    env_file:
+      - .env
     environment:
       - API_BASE_URL=http://api:8000
       - STREAMLIT_SERVER_FILE_WATCHER_TYPE=poll
@@ -67,9 +84,10 @@ services:
       - "8501:8501"
     volumes:
       - ./src:/app/src
-      - ./model_status.txt:/app/model_status.txt # Access to global model alert statuses
+      - ./model_status.txt:/app/model_status.txt # Global model alert status
     depends_on:
       - api
 
+# Named volume so PostgreSQL data survives container recreation.
 volumes:
   postgres_data: {}

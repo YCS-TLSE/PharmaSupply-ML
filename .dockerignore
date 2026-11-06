@@ -1,0 +1,31 @@
+# =============================================================================
+# Docker build context exclusions
+# =============================================================================
+# Keep images small and avoid leaking local secrets or large artifacts.
+# The API and dashboard images only need src/, models/ and their respective
+# pinned requirements files.
+# =============================================================================
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+.coverage.*
+htmlcov
+.vscode
+.env
+.env.*
+!.env.example
+data
+notebooks
+tests
+docs
+logBook
+reports
+mlruns
+*.md

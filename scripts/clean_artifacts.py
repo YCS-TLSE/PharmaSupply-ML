@@ -1,18 +1,30 @@
 """
 ===============================================================================
-PharmaSupply-ML: Environment & Artifact Cleanup Utility
+PharmaSupply-ML: Artifact Cleanup Utility
 ===============================================================================
 
-OBJECTIVE & USAGE:
-------------------
-This script decouples the environment reset and artifact wiping phase from the
-master pipeline orchestrator. It allows engineers to safely clean previous run
-artifacts (models, reports, figures) and reset the model health status without
-risking Docker volume mount corruption.
+PURPOSE
+-------
+Safely remove previous run artifacts and reset the model health status without
+breaking Docker bind mounts.
 
-Usage via CLI:
-    python scripts/clean_artifacts.py          # Standard run artifact cleanup
-    python scripts/clean_artifacts.py --all    # Comprehensive cleanup (including figures)
+RESPONSIBILITIES
+----------------
+* Reset ``model_status.txt`` to ``STABLE`` (never delete the file, because it is
+  bind-mounted into containers).
+* Remove the model artifact, drift report and feature weights.
+* Optionally remove generated SHAP figures.
+
+INPUTS / OUTPUTS
+----------------
+Inputs: CLI flags (``--all``, ``--no-reset-status``) or the orchestrator call.
+Outputs: deleted files and a reset status file; logs describe each action.
+
+ARCHITECTURE INTEGRATION
+------------------------
+Invoked by ``run_pipeline.py --clean`` and directly from the CLI. The
+bind-mount protection is essential: deleting the status file would make Docker
+create a directory at that path on the next start.
 """
 
 import argparse
@@ -29,6 +41,7 @@ logger = logging.getLogger("clean_artifacts")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+# Public cleanup routine shared by the CLI and the orchestrator.
 def clean_artifacts(
     reset_status: bool = True,
     include_figures: bool = False,
@@ -51,13 +64,17 @@ def clean_artifacts(
             shutil.rmtree(status_file)
         status_file.write_text("STABLE\n", encoding="utf-8")
         if verbose:
-            logger.info("   - Reset 'model_status.txt' to nominal state ('STABLE')")
+            logger.info(
+                "   - Reset 'model_status.txt' to nominal state ('STABLE')"
+            )
 
     # 2. Files to remove
     target_files = [
         PROJECT_ROOT / "reports" / "feature_weights.json",
         PROJECT_ROOT / "reports" / "drift_report.html",
-        PROJECT_ROOT / "models" / "xgboost_pharma_demand.joblib",
+        PROJECT_ROOT
+        / "models"
+        / "xgboost_pharma_demand.joblib",
     ]
 
     if include_figures:
@@ -73,17 +90,26 @@ def clean_artifacts(
                 file_path.unlink()
                 if verbose:
                     try:
-                        rel_path = file_path.relative_to(PROJECT_ROOT)
+                        rel_path = file_path.relative_to(
+                            PROJECT_ROOT
+                        )
                     except ValueError:
                         rel_path = file_path
-                    logger.info(f"   - Removed artifact: {rel_path}")
+                    logger.info(
+                        f"   - Removed artifact: {rel_path}"
+                    )
             except Exception as e:
-                logger.warning(f"   - Could not remove {file_path}: {e}")
+                logger.warning(
+                    f"   - Could not remove {file_path}: {e}"
+                )
 
     if verbose:
-        logger.info("Artifact cleanup successfully completed.")
+        logger.info(
+            "Artifact cleanup successfully completed."
+        )
 
 
+# CLI wrapper: translates flags into the cleanup options.
 def main():
     parser = argparse.ArgumentParser(
         description="Clean previous PharmaSupply-ML run artifacts and reset environment."
@@ -109,4 +135,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -1,45 +1,22 @@
 """
 ===============================================================================
-PharmaSupply-ML: Test Suite for FastAPI Serving & Inventory Decision Service
+PharmaSupply-ML: Test Suite for the FastAPI Serving Layer
 ===============================================================================
 
-EDUCATIONAL & MLOPS PURPOSE:
-----------------------------
-This test module serves as a practical guide for learning MLOps testing best
-practices using pytest and FastAPI's TestClient.
-
-In a production MLOps pipeline, model serving is not just about producing a
-raw prediction; it encompasses business logic, health checks, data quality
-validation, and operational alert routing.
-
-Key Testing Concepts Demonstrated:
-1. Endpoint Coverage:
-   Ensures that every API route (/model/health, /stores, /stores/{id}/alerts,
-   /features/{store}/{product}, /predict) behaves according to specification.
-
-2. Schema & Contract Validation (Data Quality Guardrails):
-   Verifies that Pydantic models automatically enforce valid input boundaries
-   (e.g., rejecting negative stock levels with HTTP 422 Unprocessable Entity).
-
-3. Graceful Degradation & Dependency Mocking:
-   Uses unittest.mock.patch to simulate scenarios where the ML model artifact
-   is uninitialized or missing, ensuring the API responds with an explicit
-   HTTP 503 Service Unavailable status instead of crashing unexpected.
-
-4. Train-Serve Parity & Integration Verification:
-   Validates that the API correctly handles input features matching the
-   schema required by the trained XGBoost model.
-
-Author: PharmaSupply-ML Team
+Covers routing, explicit error handling (404/503), the typed /features
+contract, the MOQ floor, liveness/readiness probes and the metrics endpoint.
 """
+
+from __future__ import annotations
 
 import os
 import sys
+from contextlib import contextmanager
 from unittest.mock import patch
 
+import psycopg2
 from fastapi.testclient import TestClient
 
-# Add the project root directory to sys.path to allow absolute imports of src.api
 sys.path.append(
     os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..")
@@ -47,11 +24,12 @@ sys.path.append(
 )
 
 from src.api import app
+from src.repositories.database import (
+    DatabaseUnavailableError,
+)
 
-# Initialize the lightweight TestClient for FastApi routing inspection
 client = TestClient(app)
 
-# Standard valid payload mirroring PredictionInput schema requirements
 VALID_PAYLOAD = {
     "store_id": "1",
     "product_id": "MED_001",
@@ -61,132 +39,273 @@ VALID_PAYLOAD = {
     "batch_size": 50,
     "moq": 100,
     "shelf_life_days": 365,
-    "lag_1": 90.0,
-    "lag_7": 630.0,
-    "lag_14": 1260.0,
-    "lag_30": 2700.0,
+    "lag_1": 100.0,
+    "lag_7": 100.0,
+    "lag_14": 100.0,
+    "lag_30": 100.0,
+    "history": [100.0] * 30,
 }
 
 
+class _FakeCursor:
+    """Minimal psycopg2 cursor stub returning predefined rows."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def execute(self, query, params=None):
+        self.query = query
+        self.params = params
+
+    def fetchall(self):
+        return self._rows
+
+
+@contextmanager
+def _fake_db_cursor(rows):
+    yield _FakeCursor(rows)
+
+
+def _patch_db(rows):
+    return patch(
+        "src.repositories.inventory.db_cursor",
+        side_effect=lambda dict_rows=False: _fake_db_cursor(
+            rows
+        ),
+    )
+
+
+class _FakeModel:
+    """Deterministic model stub returning a 700-unit 7-day demand."""
+
+    def predict(self, X):
+        return [700.0]
+
+
 def test_model_health():
-    """
-    Validates the model health endpoint.
-    Ensures that health status and human-readable operational messages
-    are correctly exposed for front-end interface consumption.
-    """
+    """The health endpoint is side-effect free and always typed."""
     response = client.get("/model/health")
     assert response.status_code == 200
     data = response.json()
-    assert "status" in data
-    assert "message" in data
     assert data["status"] in [
         "STABLE",
         "WARNING",
         "CRITICAL",
+        "UNKNOWN",
     ]
+    assert "message" in data
+
+
+def test_livez():
+    response = client.get("/livez")
+    assert response.status_code == 200
+    assert response.json()["status"] == "alive"
+
+
+def test_readyz_not_ready_without_model():
+    with patch(
+        "src.api_routers.health.check_database_health",
+        return_value=True,
+    ):
+        response = client.get("/readyz")
+    assert response.status_code == 503
+
+
+def test_readyz_ready():
+    app.state.model = _FakeModel()
+    try:
+        with patch(
+            "src.api_routers.health.check_database_health",
+            return_value=True,
+        ):
+            response = client.get("/readyz")
+    finally:
+        app.state.model = None
+
+    assert response.status_code == 200
+    assert response.json()["model_loaded"] is True
+
+
+def test_metrics_endpoint():
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    assert "pharma_api_requests_total" in response.text
 
 
 def test_get_stores():
-    """
-    Validates store list retrieval.
-    Ensures that the database fetch endpoint returns a structured list of stores.
-    """
-    response = client.get("/stores")
+    """Validates store list retrieval against a stubbed database."""
+    with _patch_db([("1",), ("2",)]):
+        response = client.get("/stores")
+
     assert response.status_code == 200
-    data = response.json()
-    assert "stores" in data
-    assert isinstance(data["stores"], list)
+    assert response.json()["stores"] == ["1", "2"]
+
+
+def test_get_stores_database_error_returns_503():
+    """A database failure must be explicit, never a fake store list."""
+    with patch(
+        "src.repositories.inventory.db_cursor",
+        side_effect=DatabaseUnavailableError("boom"),
+    ):
+        response = client.get("/stores")
+
+    assert response.status_code == 503
+    assert (
+        "unavailable" in response.json()["detail"].lower()
+    )
 
 
 def test_get_products():
-    """
-    Validates product catalog retrieval for a given store.
-    Checks that valid product identifiers are returned in list format.
-    """
-    response = client.get("/stores/1/products")
+    """Validates product catalogue retrieval against a stubbed database."""
+    with _patch_db([("MED_001",), ("MED_002",)]):
+        response = client.get("/stores/1/products")
+
     assert response.status_code == 200
-    data = response.json()
-    assert "products" in data
-    assert isinstance(data["products"], list)
+    assert response.json()["products"] == [
+        "MED_001",
+        "MED_002",
+    ]
 
 
 def test_get_store_alerts():
-    """
-    Validates the multi-level operational alert engine.
-    Ensures that parameter misconfigurations, stockout/expiry risks,
-    and model drift alerts are formatted into a prioritized list.
-    """
-    response = client.get("/stores/1/alerts")
+    """Validates the alert engine against a stubbed healthy inventory row."""
+    rows = [
+        {
+            "product_id": "MED_001",
+            "stock_on_hand": 500,
+            "target_demand": 100,
+            "safety_threshold": 200,
+            "critical_expiry_days": 365,
+            "shelf_life_days": 365,
+        }
+    ]
+    with _patch_db(rows):
+        response = client.get("/stores/1/alerts")
+
     assert response.status_code == 200
     data = response.json()
-    assert "store_id" in data
-    assert "model_status" in data
-    assert "alerts" in data
+    assert data["store_id"] == "1"
     assert isinstance(data["alerts"], list)
 
 
 def test_get_latest_features():
-    """
-    Validates dynamic feature retrieval for specific store/product pairs.
-    Checks that lag variables and logistical constraints are correctly formatted.
-    """
-    response = client.get("/features/1/MED_001")
+    """Validates the typed /features contract, including FEFO and history."""
+    rows = [
+        {
+            "stock_on_hand": 500.0,
+            "supplier_lead_time": 3.0,
+            "sales_volume": 100.0,
+            "safety_threshold": 150.0,
+            "batch_size": 50,
+            "moq": 100,
+            "shelf_life_days": 365,
+            "critical_expiry_days": 120,
+        }
+        for _ in range(30)
+    ]
+    with _patch_db(rows):
+        response = client.get("/features/1/MED_001")
+
     assert response.status_code == 200
     data = response.json()
-    assert "stock_on_hand" in data
-    assert "lag_7" in data
+    assert data["stock_on_hand"] == 500.0
+    assert data["lag_7"] == 100.0
+    assert data["critical_expiry_days"] == 120
+    assert len(data["sales_history"]) == 30
 
 
-def test_predict_success():
-    """
-    Validates inference execution under nominal operating conditions.
-    When the model artifact is loaded, verifies demand predictions
-    and replenishment quantity calculations enforcing MOQ and batch constraints.
-    """
+def test_get_latest_features_missing_history_returns_404():
+    """An unknown store/product pair must return 404, not fake defaults."""
+    with _patch_db([]):
+        response = client.get("/features/1/UNKNOWN")
+
+    assert response.status_code == 404
+
+
+def test_predict_success(override_model):
+    """Validates inference and replenishment against a deterministic model."""
+    override_model(_FakeModel())
     response = client.post("/predict", json=VALID_PAYLOAD)
 
-    # If the XGBoost model artifact is loaded in the local/CI environment
-    if response.status_code == 200:
-        data = response.json()
-        assert str(data["store_id"]) == "1"
-        assert str(data["product_id"]) == "MED_001"
-        assert "predicted_demand" in data
-        assert data["predicted_demand"] >= 0.0
-        assert "order_quantity" in data
-    else:
-        # Fallback assertion if model binary file is absent during headless test runs
-        assert response.status_code == 503
+    assert response.status_code == 200
+    data = response.json()
+    assert str(data["store_id"]) == "1"
+    assert str(data["product_id"]) == "MED_001"
+    assert data["predicted_demand"] == 700.0
+    assert data["reorder_needed"] is True
+    assert data["order_quantity"] >= VALID_PAYLOAD["moq"]
+    assert (
+        data["order_quantity"] % VALID_PAYLOAD["batch_size"]
+        == 0
+    )
 
 
-def test_predict_model_not_loaded():
-    """
-    Simulates uninitialized model state using mock patching.
-    Ensures the service returns an explicit HTTP 503 status code
-    when the model binary is unavailable in memory.
-    """
-    with patch("src.api.loaded_model", None):
-        response = client.post(
-            "/predict", json=VALID_PAYLOAD
-        )
-        assert response.status_code == 503
-        assert (
-            response.json()["detail"]
-            == "ML model artifact is not loaded in memory."
-        )
+def test_predict_order_quantity_respects_moq_after_shelf_life_cap(
+    override_model,
+):
+    """The shelf-life cap must never drop the order below the supplier MOQ."""
+    override_model(_FakeModel())
+    payload = VALID_PAYLOAD.copy()
+    payload.update(
+        {
+            "stock_on_hand": 0.0,
+            "shelf_life_days": 1,
+            "batch_size": 50,
+            "moq": 400,
+        }
+    )
+
+    response = client.post("/predict", json=payload)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["order_quantity"] >= 400
+    assert data["order_quantity"] % 50 == 0
+
+
+def test_predict_model_not_loaded(override_model):
+    """The service returns 503 when the model is unavailable."""
+    override_model(None)
+    response = client.post("/predict", json=VALID_PAYLOAD)
+    assert response.status_code == 503
+    assert (
+        response.json()["detail"]
+        == "ML model artifact is not loaded in memory."
+    )
 
 
 def test_predict_invalid_schema():
-    """
-    Validates Pydantic schema guardrails.
-    Confirms that invalid business values (e.g., negative stock levels)
-    are intercepted and rejected with HTTP 422 before reaching model inference.
-    """
+    """Pydantic rejects invalid business values with HTTP 422."""
     invalid_payload = VALID_PAYLOAD.copy()
-    invalid_payload[
-        "stock_on_hand"
-    ] = -50.0  # Invalid negative stock value
-
+    invalid_payload["stock_on_hand"] = -50.0
     response = client.post("/predict", json=invalid_payload)
-    assert (
-        response.status_code == 422
-    )  # Unprocessable Entity
+    assert response.status_code == 422
+
+
+def test_predict_history_too_short_is_rejected(
+    override_model,
+):
+    """The optional history must contain at least 30 values."""
+    override_model(_FakeModel())
+    payload = VALID_PAYLOAD.copy()
+    payload["history"] = [100.0] * 5
+    response = client.post("/predict", json=payload)
+    assert response.status_code == 422
+
+
+def test_database_error_is_not_masked():
+    """Sanity check: psycopg2 errors are converted to 503, not 200."""
+    with patch(
+        "src.repositories.database.get_db_connection",
+        side_effect=psycopg2.OperationalError("down"),
+    ):
+        response = client.get("/stores")
+    assert response.status_code == 503
+
+
+def test_lifespan_loads_model_and_stops_watcher():
+    """The application lifespan loads the artifact and cleans up on exit."""
+    with TestClient(app) as lifespan_client:
+        response = lifespan_client.get("/livez")
+        assert response.status_code == 200
+    assert app.state.model is None

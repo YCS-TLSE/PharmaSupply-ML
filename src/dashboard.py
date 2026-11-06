@@ -1,15 +1,57 @@
 """
 ===============================================================================
-PharmaSupply-ML: Thin-Client Interactive Decision Dashboard (Compact UI)
+PharmaSupply-ML: Thin-Client Decision Dashboard
 ===============================================================================
+
+PURPOSE
+-------
+Provide a business-facing Streamlit interface for monitoring model health,
+browsing operational alerts and simulating replenishment decisions. The
+dashboard is a thin client: all business logic remains in the FastAPI service.
+
+RESPONSIBILITIES
+----------------
+* Display a consolidated banner combining model status and network anomalies.
+* Let users select a store, then a prioritized anomaly or a product.
+* Fetch `/features` and forward `sales_history` to `/predict` for parity-safe
+  inference.
+* Show stock, projected stock, FEFO expiry, MOQ and lead-time indicators.
+* Offer a demo-only fallback when the API is unreachable, clearly labelled.
+
+INPUTS / OUTPUTS
+----------------
+Inputs: API base URL, optional API key, and user selections.
+Outputs: a rendered Streamlit page; no persistent business data is written.
+
+ARCHITECTURE INTEGRATION
+------------------------
+Consumes the REST API only. It imports ``src.config`` for shared messages and
+defaults, and keeps an explicit ``_demo_fallback`` marker so cached data is
+never mistaken for a live decision.
 """
 
 import os
+import sys
 from pathlib import Path
 
-import pandas as pd
 import requests
 import streamlit as st
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from src.config import (  # noqa: E402
+    API_KEY,
+    API_KEY_HEADER,
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_MOQ,
+    DEFAULT_SAFETY_THRESHOLD,
+    DEFAULT_SHELF_LIFE_DAYS,
+    DEFAULT_SUPPLIER_LEAD_TIME,
+    HEALTH_MESSAGES,
+    MODEL_STATUS_VALUES,
+)
 
 # Configure Streamlit page layout and metadata headers
 st.set_page_config(
@@ -36,14 +78,6 @@ st.markdown(
         header[data-testid="stHeader"], footer {
             display: none !important;
         }
-        div[data-testid="stVerticalBlockBorderWrapper"] {
-            background-color: #ffffff;
-            border: 1px solid #cbd5e1 !important;
-            border-left: 5px solid #2563eb !important;
-            border-radius: 8px !important;
-            padding: 12px 16px !important;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-        }
         .card-small {
             background-color: #f8fafc;
             border: 1px solid #e2e8f0;
@@ -67,6 +101,17 @@ st.markdown(
             font-size: 1.05rem !important;
             font-weight: 600 !important;
         }
+        /* Equal height styling for side-by-side metric containers in Streamlit */
+        div[data-testid="stHorizontalBlock"] > div[data-testid="column"]:has(div[data-testid="stVerticalBlockBorderWrapper"]) {
+            display: flex;
+            flex-direction: column;
+        }
+        div[data-testid="stHorizontalBlock"] > div[data-testid="column"] div[data-testid="stVerticalBlockBorderWrapper"] {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
     </style>
 """,
     unsafe_allow_html=True,
@@ -77,9 +122,17 @@ API_BASE_URL = os.getenv(
 )
 
 
+# Build the authentication header once; an empty API_KEY disables auth.
+def _api_headers() -> dict:
+    """Return the API-key header when authentication is enabled."""
+    return {API_KEY_HEADER: API_KEY} if API_KEY else {}
+
+
 # -----------------------------------------------------------------------------
 # API UTILITY FUNCTIONS WITH CACHING & MOCK FALLBACK
 # -----------------------------------------------------------------------------
+# Offline fallback used only when the API is unreachable. An unreadable file
+# returns UNKNOWN rather than falsely claiming STABLE.
 def _read_local_model_status() -> str:
     """Read local model_status.txt for mock/standalone testing when API is offline."""
     candidates = [
@@ -93,45 +146,35 @@ def _read_local_model_status() -> str:
                 content = p.read_text(
                     encoding="utf-8"
                 ).strip()
-                if content in [
-                    "STABLE",
-                    "WARNING",
-                    "CRITICAL",
-                ]:
+                if content in MODEL_STATUS_VALUES:
                     return content
                 elif content == "OK":
                     return "STABLE"
             except Exception:
                 pass
-    return "STABLE"
+    # Fail-safe: an unreadable status is never presented as healthy.
+    return "UNKNOWN"
 
 
+# Reuse the same operator-facing messages as the API to avoid copy drift.
 def _build_model_health_payload(status_val: str) -> dict:
-    messages = {
-        "STABLE": "🟢 STABLE — Le modèle de prévision est fiable",
-        "WARNING": (
-            "🟠 WARNING — Performance du modèle sous surveillance : nous vous"
-            " invitons à considérer les résultats ci-dessous avec une vigilance renforcée. Nos équipes optimisent le système."
-        ),
-        "CRITICAL": (
-            "🔴 CRITICAL — Alerte critique sur le modèle de prévision, nous vous invitons à considérer les résultats ci dessous avec une extrême vigilance, le"
-            " support client vous contactera sous 24h."
-        ),
-    }
     return {
         "status": status_val,
-        "message": messages.get(
-            status_val, messages["STABLE"]
+        "message": HEALTH_MESSAGES.get(
+            status_val, HEALTH_MESSAGES["UNKNOWN"]
         ),
     }
 
 
 @st.cache_data(ttl=5)
+# Cached because the banner is rendered on every rerun.
 def fetch_model_health():
     """Fetch model operational health status from backend API, with local file fallback."""
     try:
         res = requests.get(
-            f"{API_BASE_URL}/model/health", timeout=3
+            f"{API_BASE_URL}/model/health",
+            headers=_api_headers(),
+            timeout=3,
         )
         if res.status_code == 200:
             return res.json()
@@ -142,11 +185,14 @@ def fetch_model_health():
 
 
 @st.cache_data(ttl=30)
+# Reference data is cached for 30 seconds; an empty list is a valid api answer.
 def fetch_stores():
     """Fetch available store IDs from backend API."""
     try:
         res = requests.get(
-            f"{API_BASE_URL}/stores", timeout=5
+            f"{API_BASE_URL}/stores",
+            headers=_api_headers(),
+            timeout=5,
         )
         if res.status_code == 200:
             return res.json().get("stores", ["1"])
@@ -156,11 +202,13 @@ def fetch_stores():
 
 
 @st.cache_data(ttl=30)
+# Product catalogue is scoped to the selected store.
 def fetch_products(store_id):
     """Fetch available products for a specific store from backend API."""
     try:
         res = requests.get(
             f"{API_BASE_URL}/stores/{store_id}/products",
+            headers=_api_headers(),
             timeout=5,
         )
         if res.status_code == 200:
@@ -171,11 +219,14 @@ def fetch_products(store_id):
 
 
 @st.cache_data(ttl=5)
+# Alerts drive both the network summary and the exception selector. The demo
+# fallback only fabricates a drift alert for real WARNING/CRITICAL states.
 def fetch_store_alerts(store_id):
     """Fetch active alerts for a specific store from backend API, with mock fallback."""
     try:
         res = requests.get(
             f"{API_BASE_URL}/stores/{store_id}/alerts",
+            headers=_api_headers(),
             timeout=3,
         )
         if res.status_code == 200:
@@ -185,7 +236,7 @@ def fetch_store_alerts(store_id):
 
     fallback_status = _read_local_model_status()
     mock_alerts = []
-    if fallback_status in ["WARNING", "CRITICAL"]:
+    if fallback_status in {"WARNING", "CRITICAL"}:
         mock_alerts.append(
             {
                 "product_id": "GLOBAL_MODEL",
@@ -208,11 +259,14 @@ def fetch_store_alerts(store_id):
     }
 
 
+# Feature fetch includes the 30-day history required by /predict. A fallback
+# response is explicitly marked with ``_demo_fallback``.
 def fetch_latest_features(store_id, product_id):
     """Fetch latest feature set for a store and product pair."""
     try:
         res = requests.get(
             f"{API_BASE_URL}/features/{store_id}/{product_id}",
+            headers=_api_headers(),
             timeout=5,
         )
         if res.status_code == 200:
@@ -220,17 +274,19 @@ def fetch_latest_features(store_id, product_id):
     except Exception:
         pass
     return {
+        "_demo_fallback": True,
         "stock_on_hand": 100.0,
-        "supplier_lead_time": 3.0,
-        "safety_threshold": 150.0,
-        "batch_size": 1,
-        "moq": 1,
-        "shelf_life_days": 365,
-        "critical_expiry_days": 365,
+        "supplier_lead_time": DEFAULT_SUPPLIER_LEAD_TIME,
+        "safety_threshold": DEFAULT_SAFETY_THRESHOLD,
+        "batch_size": DEFAULT_BATCH_SIZE,
+        "moq": DEFAULT_MOQ,
+        "shelf_life_days": DEFAULT_SHELF_LIFE_DAYS,
+        "critical_expiry_days": DEFAULT_SHELF_LIFE_DAYS,
         "lag_1": 20.0,
         "lag_7": 140.0,
         "lag_14": 280.0,
         "lag_30": 600.0,
+        "sales_history": [20.0] * 30,
     }
 
 
@@ -251,6 +307,13 @@ model_status = model_health.get("status", "STABLE")
 
 # Fetch stores and calculate network anomalies
 stores = fetch_stores()
+if not stores:
+    st.error(
+        "Aucun site disponible : vérifiez l'ingestion des données dans "
+        "PostgreSQL."
+    )
+    st.stop()
+
 stores_with_issues_count = sum(
     1
     for s in stores
@@ -265,7 +328,7 @@ else:
 
 # Background logic: Soft pastel red if network anomalies exist OR if model is WARNING/CRITICAL
 is_alert_condition = (stores_with_issues_count > 0) or (
-    model_status in ["WARNING", "CRITICAL"]
+    model_status in {"WARNING", "CRITICAL", "UNKNOWN"}
 )
 
 if is_alert_condition:
@@ -388,6 +451,11 @@ if selected_product_id:
     features = fetch_latest_features(
         selected_store_id, selected_product_id
     )
+    if features.get("_demo_fallback"):
+        st.warning(
+            "API indisponible : cette fiche affiche des valeurs de "
+            "démonstration et ne doit pas servir à une décision réelle."
+        )
 
     override_key = f"override_safety_{selected_product_id}"
     if override_key in st.session_state:
@@ -412,12 +480,14 @@ if selected_product_id:
         "lag_7": features["lag_7"],
         "lag_14": features["lag_14"],
         "lag_30": features["lag_30"],
+        "history": features.get("sales_history"),
     }
 
     try:
         response = requests.post(
             f"{API_BASE_URL}/predict",
             json=payload,
+            headers=_api_headers(),
             timeout=5,
         )
         if response.status_code == 200:
@@ -450,37 +520,6 @@ if selected_product_id:
                 features.get("critical_expiry_days", 365)
             )
 
-            with st.container(border=True):
-                m1, m2, m3, m4 = st.columns(4)
-                with m1:
-                    st.metric(
-                        label="Stock physique actuel",
-                        value=f"{int(features['stock_on_hand'])} units",
-                    )
-                with m2:
-                    st.metric(
-                        label="Demande prévue (7j)",
-                        value=f"{int(predicted_demand)} units",
-                        delta=-int(predicted_demand),
-                        delta_color="inverse",
-                    )
-                with m3:
-                    st.metric(
-                        label="Stock projeté (J+7)",
-                        value=f"{int(projected_stock)} units",
-                    )
-                with m4:
-                    st.metric(
-                        label="Péremption critique (FEFO)",
-                        value=f"{int(critical_expiry)} jours",
-                        delta="Risque lot urgent"
-                        if critical_expiry < 30
-                        else "Normal",
-                        delta_color="inverse"
-                        if critical_expiry < 30
-                        else "normal",
-                    )
-
             if critical_expiry < 30:
                 st.error(
                     f"**ALERTE PÉREMPTION CRITIQUE (FEFO)** : Le lot urgent expire dans **{critical_expiry} jours** !"
@@ -495,79 +534,102 @@ if selected_product_id:
                     "**STOCK SÉCURISÉ** — Aucun réapprovisionnement immédiat nécessaire."
                 )
 
-            st.markdown("---")
+            # Deux cadres distincts : l'un pour les indicateurs clés, l'autre pour les seuils logistiques
+            col_card_stock, col_card_seuil = st.columns(2)
 
-            col_chart, col_actions = st.columns([2.5, 1.5])
-
-            with col_chart:
-                st.markdown(
-                    "##### Historique des ventes & dynamique"
-                )
-                lag_df = pd.DataFrame(
-                    {
-                        "Période": [
-                            "J-30",
-                            "J-14",
-                            "J-7",
-                            "J-1 (Dernier)",
-                        ],
-                        "Volume de ventes": [
-                            features["lag_30"] / 30.0,
-                            features["lag_14"] / 14.0,
-                            features["lag_7"] / 7.0,
-                            features["lag_1"],
-                        ],
-                    }
-                )
-                st.bar_chart(lag_df.set_index("Période"))
-
-            with col_actions:
-                st.markdown("##### Actions & simulations")
-                if st.button(
-                    "Recalculer le stock de sécurité optimal",
-                    use_container_width=True,
-                ):
-                    st.session_state[override_key] = (
-                        optimal_safety
+            with col_card_stock:
+                with st.container(border=True):
+                    st.markdown(
+                        "##### 📦 Indicateurs clés de stock"
                     )
-                    st.cache_data.clear()  # Flush cache for instant UI refresh
-                    st.success(
-                        f"Seuil mis à jour à {optimal_safety} unités !"
-                    )
-                    st.rerun()
+                    ms1, ms2 = st.columns(2)
+                    with ms1:
+                        st.metric(
+                            label="Stock physique actuel",
+                            value=f"{int(features['stock_on_hand'])} units",
+                        )
+                        st.metric(
+                            label="Stock projeté (J+7)",
+                            value=f"{int(projected_stock)} units",
+                        )
+                    with ms2:
+                        st.metric(
+                            label="Demande prévue (7j)",
+                            value=f"{int(predicted_demand)} units",
+                            delta=-int(predicted_demand),
+                            delta_color="inverse",
+                        )
+                        st.metric(
+                            label="Péremption critique (FEFO)",
+                            value=f"{int(critical_expiry)} jours",
+                            delta="Risque lot urgent"
+                            if critical_expiry < 30
+                            else "Normal",
+                            delta_color="inverse"
+                            if critical_expiry < 30
+                            else "normal",
+                        )
 
-                if st.button(
-                    "Simuler commande / purge FEFO",
-                    use_container_width=True,
-                ):
-                    st.cache_data.clear()  # Flush cache for instant UI refresh
-                    st.info(
-                        f"Simulation validée : Commande de {order_quantity} unités enregistrée."
-                    )
-                    st.rerun()
+                    st.markdown("")
+                    if st.button(
+                        "Simuler commande / purge FEFO",
+                        use_container_width=True,
+                        key="btn_sim_commande",
+                    ):
+                        st.cache_data.clear()
+                        st.info(
+                            f"Simulation validée : Commande de {order_quantity} unités enregistrée."
+                        )
+                        st.rerun()
 
-            st.markdown("##### Paramètres logistiques")
-            c1, c2, c3, c4 = st.columns(4)
-            with c1:
-                st.markdown(
-                    f"""<div class="card-small"><div class="card-small-label">Seuil de sécurité</div><div class="card-small-value">{safety_threshold} units</div></div>""",
-                    unsafe_allow_html=True,
-                )
-            with c2:
-                st.markdown(
-                    f"""<div class="card-small"><div class="card-small-label">Délai fournisseur</div><div class="card-small-value">{lead_time} days</div></div>""",
-                    unsafe_allow_html=True,
-                )
-            with c3:
-                st.markdown(
-                    f"""<div class="card-small"><div class="card-small-label">Batch size (colisage)</div><div class="card-small-value">{features.get("batch_size", 1)} units</div></div>""",
-                    unsafe_allow_html=True,
-                )
-            with c4:
-                st.markdown(
-                    f"""<div class="card-small"><div class="card-small-label">MOQ (min. commande)</div><div class="card-small-value">{features.get("moq", 1)} units</div></div>""",
-                    unsafe_allow_html=True,
-                )
+            with col_card_seuil:
+                with st.container(border=True):
+                    st.markdown(
+                        "##### ⚙️ Seuils logistiques & Paramètres"
+                    )
+                    moq_val = int(features.get("moq", 1))
+                    batch_val = int(
+                        features.get("batch_size", 1)
+                    )
+                    multiplier = (
+                        moq_val // batch_val
+                        if batch_val > 0
+                        else 1
+                    )
+
+                    st.metric(
+                        label="Seuil de sécurité",
+                        value=f"{safety_threshold} units",
+                    )
+
+                    s_col1, s_col2 = st.columns(2)
+                    with s_col1:
+                        st.metric(
+                            label="MOQ (Min. commande)",
+                            value=f"{moq_val} u.",
+                            delta=f"{multiplier}x{batch_val}u.",
+                            delta_color="off",
+                        )
+                    with s_col2:
+                        st.metric(
+                            label="Délai fournisseur",
+                            value=f"{lead_time} days",
+                        )
+
+                    st.markdown("")
+                    if st.button(
+                        "Recalculer le stock de sécurité optimal",
+                        use_container_width=True,
+                        key="btn_recalc_seuil",
+                    ):
+                        st.session_state[override_key] = (
+                            optimal_safety
+                        )
+                        st.cache_data.clear()
+                        st.success(
+                            f"Seuil mis à jour à {optimal_safety} unités !"
+                        )
+                        st.rerun()
 
         else:
             st.error(

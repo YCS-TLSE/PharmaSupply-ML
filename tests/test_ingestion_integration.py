@@ -72,6 +72,7 @@ def db_engine(postgres_container, monkeypatch):
     engine.dispose()
 
 
+@pytest.mark.integration
 def test_ingestion_integration_real_postgres(
     db_engine, tmp_path
 ):
@@ -110,9 +111,9 @@ def test_ingestion_integration_real_postgres(
 
     # 2. Verify table exists prior to ingestion via inspector
     inspector = inspect(db_engine)
-    assert inspector.has_table(table_name), (
-        "Staging table must exist after schema initialization."
-    )
+    assert inspector.has_table(
+        table_name
+    ), "Staging table must exist after schema initialization."
 
     # 3. Execute the ingestion pipeline (which connects to the container via monkeypatched env)
     ingest_csv_to_postgres(csv_file, table_name)
@@ -127,9 +128,9 @@ def test_ingestion_integration_real_postgres(
         row = result.fetchone()
 
         # We inserted 2 rows
-        assert row[0] == 2, (
-            "Exactly 2 rows should be ingested into PostgreSQL."
-        )
+        assert (
+            row[0] == 2
+        ), "Exactly 2 rows should be ingested into PostgreSQL."
 
     # 5. Test Idempotence: Run ingestion a second time to verify TRUNCATE works correctly without duplicating rows
     ingest_csv_to_postgres(csv_file, table_name)
@@ -139,6 +140,6 @@ def test_ingestion_integration_real_postgres(
             text(f"SELECT COUNT(*) FROM {table_name}")
         )
         row = result.fetchone()
-        assert row[0] == 2, (
-            "Idempotence check failed: TRUNCATE should reset table content on re-ingestion."
-        )
+        assert (
+            row[0] == 2
+        ), "Idempotence check failed: TRUNCATE should reset table content on re-ingestion."

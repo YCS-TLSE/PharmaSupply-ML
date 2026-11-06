@@ -3,18 +3,31 @@
 PharmaSupply-ML: Temporal Split & XGBoost Training Core
 ===============================================================================
 
-OBJECTIVE & USAGE:
-------------------
-This script forms the Machine Learning core of the MLOps pipeline. It:
-1. Integrates with the autonomous data validation module (`validation.py`) to
-   guarantee clean, auto-corrected input data.
-2. Imports the decoupled feature engineering module (`features.py`).
-3. Performs a rigorous time-based chronological split (preventing data leakage).
-4. Trains an XGBoost regressor to forecast pharmaceutical product demand and
-   persists the serialized artifact.
+PURPOSE
+-------
+Train the demand forecasting model with a leakage-free chronological split and
+persist a reproducible artifact for the serving layer.
 
-Author: YCS-TLSE
-Project: PharmaSupply-ML
+RESPONSIBILITIES
+----------------
+* Load data through the autonomous validation/cleaning quality gate.
+* Split observations by date (80/20) so the test set is strictly in the future.
+* Fit an XGBoost regressor on the shared feature contract.
+* Compute MAE, RMSE and WMAPE for regression monitoring.
+* Persist the joblib artifact and optionally log params, metrics, signature and
+  model to MLflow (tracking + registry).
+
+INPUTS / OUTPUTS
+----------------
+Inputs: a validated DataFrame with dates, features and ``TARGET_COL``.
+Outputs: the fitted model, a metrics dictionary, the test matrices and the
+serialised artifact at ``MODEL_PATH``.
+
+ARCHITECTURE INTEGRATION
+------------------------
+Called by ``run_pipeline.py`` and ``src.monitoring``. MLflow logging is
+best-effort and disabled by default, so training never depends on an external
+tracking server.
 """
 
 # ==============================================================================
@@ -29,10 +42,19 @@ import pandas as pd
 from dotenv import load_dotenv
 from xgboost import XGBRegressor
 
-# Import the autonomous validation and cleaning gate
-from src.validation import run_validation_and_clean
-# Import decoupled feature engineering for Train/Serve parity
+# Shared feature contract, validation gate and feature engineering
+from src.config import (
+    FEATURE_COLS,
+    MLFLOW_ARTIFACT_PATH,
+    MLFLOW_ENABLED,
+    MLFLOW_EXPERIMENT_NAME,
+    MLFLOW_REGISTERED_MODEL_NAME,
+    MLFLOW_TRACKING_URI,
+    MODEL_PATH,
+    TARGET_COL,
+)
 from src.features import create_features
+from src.validation import run_validation_and_clean
 
 # Load environment variables from .env file
 load_dotenv()
@@ -44,6 +66,58 @@ logging.basicConfig(
 )
 
 
+# Optional MLflow bridge. Tracking failures are logged and swallowed because a
+# registry outage must never prevent the model artifact from being produced.
+def _log_to_mlflow(
+    model,
+    metrics: dict[str, float],
+    params: dict[str, float],
+    X_train: pd.DataFrame,
+) -> str | None:
+    """Log params, metrics and a signed model to MLflow.
+
+    Tracking is best-effort: a registry outage must never fail training.
+    """
+    if not MLFLOW_ENABLED:
+        return None
+
+    try:
+        import mlflow
+        import mlflow.xgboost
+        from mlflow.models import infer_signature
+    except ImportError:
+        logging.warning(
+            "MLflow is not installed; tracking skipped."
+        )
+        return None
+
+    try:
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
+        with mlflow.start_run() as run:
+            mlflow.log_params(params)
+            mlflow.log_metrics(metrics)
+            sample = X_train.head(5)
+            signature = infer_signature(
+                sample, model.predict(sample)
+            )
+            mlflow.xgboost.log_model(
+                model,
+                artifact_path=MLFLOW_ARTIFACT_PATH,
+                signature=signature,
+                input_example=sample,
+                registered_model_name=MLFLOW_REGISTERED_MODEL_NAME,
+            )
+            return run.info.run_id
+    except (
+        Exception
+    ) as exc:  # pragma: no cover - external service
+        logging.warning("MLflow logging failed: %s", exc)
+        return None
+
+
+# Data access entry point for the training pipeline. Validation and cleaning
+# happen upstream so training only sees structurally valid rows.
 def load_validated_data() -> pd.DataFrame:
     """Fetches raw data through the automated validation and cleaning quality gate,
 
@@ -59,21 +133,13 @@ def load_validated_data() -> pd.DataFrame:
     return df
 
 
+# Core training routine: chronological split, fit, evaluation, persistence and
+# optional MLflow publication. The split is performed on unique dates, not on
+# shuffled rows, to avoid temporal leakage.
 def train_xgboost(df: pd.DataFrame):
     """Train an XGBoost regressor using a time-based split and evaluate performance."""
-    feature_cols = [
-        "month",
-        "dayofweek",
-        "is_weekend",
-        "stock_on_hand",
-        "supplier_lead_time",
-        "lag_7",
-        "lag_14",
-        "lag_30",
-        "rolling_mean_7",
-        "rolling_mean_30",
-    ]
-    target_col = "target_demand"
+    feature_cols = list(FEATURE_COLS)
+    target_col = TARGET_COL
 
     unique_dates = np.sort(df["date"].unique())
     split_idx = int(len(unique_dates) * 0.8)
@@ -125,18 +191,34 @@ def train_xgboost(df: pd.DataFrame):
     logging.info(f"RMSE:  {rmse:.2f}")
     logging.info(f"WMAPE: {wmape:.2f}%")
 
-    models_dir = Path("models")
-    models_dir.mkdir(exist_ok=True)
-    model_path = models_dir / "xgboost_pharma_demand.joblib"
+    model_path = Path(MODEL_PATH)
+    model_path.parent.mkdir(parents=True, exist_ok=True)
 
     joblib.dump(model, model_path)
     logging.info(
         f"Model artifact saved successfully -> {model_path}"
     )
 
+    metrics = {
+        "mae": float(mae),
+        "rmse": float(rmse),
+        "wmape": float(wmape),
+    }
+    params = {
+        "n_estimators": 150,
+        "learning_rate": 0.05,
+        "max_depth": 5,
+        "base_score": 0.5,
+        "random_state": 42,
+        "feature_count": len(feature_cols),
+    }
+    run_id = _log_to_mlflow(model, metrics, params, X_train)
+    if run_id:
+        metrics["mlflow_run_id"] = run_id
+
     return (
         model,
-        {"mae": mae, "rmse": rmse, "wmape": wmape},
+        metrics,
         X_test,
         y_test,
     )

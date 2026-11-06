@@ -3,23 +3,29 @@
 PharmaSupply-ML: Data Ingestion & Staging Pipeline
 ===============================================================================
 
-OBJECTIVE & USAGE:
-------------------
-This script automates the staging and ingestion pipeline for the pharmaceutical
-supply chain forecasting system. It provides:
-1. Container Lifecycle Verification: Ensures the PostgreSQL Docker container is
-   active and healthy prior to database operations.
-2. Robust Data Normalization: Reads raw CSV historical datasets and standardizes
-   identifiers (store IDs, product IDs) to prevent type mismatch errors.
-3. Dynamic Constraint Integration: Detects and propagates user-provided custom
-   safety thresholds, batch sizes, minimum order quantities (MOQ), shelf-life
-   parameters, and critical expiry tracking (FEFO) per product, falling back
-   gracefully to sensible default values.
-4. Relational Database Loading: Truncates the existing staging table (preserving
-   PostgreSQL DDL, SERIAL keys, and indexes) then appends rows via SQLAlchemy.
+PURPOSE
+-------
+Load a raw pharmaceutical demand CSV into PostgreSQL, normalising optional
+columns and preserving idempotence through an incremental UPSERT.
 
-Author: YCS-TLSE
-Project: PharmaSupply-ML
+RESPONSIBILITIES
+----------------
+* Optionally ensure the Docker/PostgreSQL infrastructure is running.
+* Read and normalise store/product identifiers and logistical columns.
+* Align Python types with the PostgreSQL DDL (dates, integers, numerics).
+* Create the natural-key unique index if an older schema lacks it.
+* Upsert rows on ``(store_id, product_id, date)`` with ``execute_values``.
+
+INPUTS / OUTPUTS
+----------------
+Inputs: a CSV path and a target table name.
+Outputs: rows inserted/updated in PostgreSQL and human-readable progress logs.
+
+ARCHITECTURE INTEGRATION
+------------------------
+Called by ``run_pipeline.py`` and the module CLI. The natural key matches
+Alembic migration ``0001`` and ``sql/schema.sql``. Upsert semantics preserve
+historical rows while refreshing changed values.
 """
 
 # ==============================================================================
@@ -29,12 +35,21 @@ import subprocess
 from pathlib import Path
 
 import pandas as pd
+import psycopg2
+from psycopg2.extras import execute_values
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 
+from src.config import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_MOQ,
+    DEFAULT_SAFETY_THRESHOLD,
+    DEFAULT_SHELF_LIFE_DAYS,
+)
 from src.db_config import ROOT_DIR, get_database_url
 
 
+# Infrastructure convenience: best-effort compose startup for local runs.
 def ensure_postgres_running():
     """
     Ensures that the PostgreSQL Docker container is up and running.
@@ -57,6 +72,8 @@ def ensure_postgres_running():
         )
 
 
+# SQLAlchemy engine used for schema inspection and the raw DBAPI connection
+# required by execute_values.
 def get_db_engine():
     """
     Creates and returns a SQLAlchemy engine for secure PostgreSQL connectivity.
@@ -70,6 +87,8 @@ def get_db_engine():
 # ==============================================================================
 # 2. INGESTION FUNCTION
 # ==============================================================================
+# Security guard: the table name is interpolated into DDL/DML strings, so it
+# must contain only letters, digits and underscores.
 def _assert_safe_table_name(table_name: str) -> None:
     """Reject identifiers that cannot be interpolated into TRUNCATE safely."""
     if not table_name.replace("_", "").isalnum():
@@ -78,6 +97,8 @@ def _assert_safe_table_name(table_name: str) -> None:
         )
 
 
+# Main ingestion routine: normalise, type-align, ensure the natural key, then
+# perform a chunked UPSERT. Failure modes are reported without masking.
 def ingest_csv_to_postgres(
     file_path: Path,
     table_name: str,
@@ -119,7 +140,7 @@ def ingest_csv_to_postgres(
         print(
             "ℹ️ Column 'safety_threshold' missing in source data: applying standard default (150.0)"
         )
-        df["safety_threshold"] = 150.0
+        df["safety_threshold"] = DEFAULT_SAFETY_THRESHOLD
     else:
         df["safety_threshold"] = df[
             "safety_threshold"
@@ -130,23 +151,25 @@ def ingest_csv_to_postgres(
         print(
             "ℹ️ Column 'batch_size' missing in source data: applying standard default (1 unit)"
         )
-        df["batch_size"] = 1
+        df["batch_size"] = DEFAULT_BATCH_SIZE
 
     if "moq" not in df.columns:
         print(
             "ℹ️ Column 'moq' missing in source data: applying standard default (1 unit)"
         )
-        df["moq"] = 1
+        df["moq"] = DEFAULT_MOQ
 
     # --- 5. EXPIRY CONSTRAINT (SHELF-LIFE) STAGING ---
     if "shelf_life_days" not in df.columns:
         print(
             "ℹ️ Column 'shelf_life_days' missing in source data: applying standard default (365 days)"
         )
-        df["shelf_life_days"] = 365
+        df["shelf_life_days"] = DEFAULT_SHELF_LIFE_DAYS
     else:
         df["shelf_life_days"] = (
-            df["shelf_life_days"].fillna(365).astype(int)
+            df["shelf_life_days"]
+            .fillna(DEFAULT_SHELF_LIFE_DAYS)
+            .astype(int)
         )
 
     # --- 6. CRITICAL EXPIRY CONSTRAINT (FEFO) STAGING ---
@@ -162,7 +185,7 @@ def ingest_csv_to_postgres(
             .astype(int)
         )
 
-    # --- 7. RELATIONAL DATABASE PERSISTENCE (TRUNCATE + APPEND) ---
+    # --- 7. RELATIONAL DATABASE PERSISTENCE (INCREMENTAL UPSERT) ---
     try:
         _assert_safe_table_name(table_name)
         engine = get_db_engine()
@@ -171,18 +194,20 @@ def ingest_csv_to_postgres(
         if not inspector.has_table(table_name):
             print(
                 f"❌ Error: Table '{table_name}' does not exist. "
-                "Apply sql/schema.sql before ingesting."
+                "Apply sql/schema.sql or `alembic upgrade head` before ingesting."
             )
             return
 
         table_columns = {
-            column["name"] for column in inspector.get_columns(table_name)
+            column["name"]
+            for column in inspector.get_columns(table_name)
         }
         # Let PostgreSQL populate SERIAL id and created_at defaults.
         insert_columns = [
             col
             for col in df.columns
-            if col in table_columns and col not in {"id", "created_at"}
+            if col in table_columns
+            and col not in {"id", "created_at"}
         ]
         if not insert_columns:
             print(
@@ -190,27 +215,101 @@ def ingest_csv_to_postgres(
             )
             return
 
-        df_to_load = df[insert_columns]
-        print(
-            f"⏳ Truncating '{table_name}' (DDL preserved) then appending "
-            f"{len(df_to_load)} records..."
-        )
+        key_columns = {"store_id", "product_id", "date"}
+        missing_keys = key_columns - set(insert_columns)
+        if missing_keys:
+            print(
+                "❌ Error: Missing key columns required for UPSERT: "
+                f"{sorted(missing_keys)}"
+            )
+            return
 
-        with engine.begin() as connection:
-            connection.execute(
-                text(f"TRUNCATE TABLE {table_name} RESTART IDENTITY")
+        df_to_load = df[insert_columns].copy()
+        # Align Python types with the PostgreSQL DDL before binding.
+        if "date" in df_to_load.columns:
+            df_to_load["date"] = pd.to_datetime(
+                df_to_load["date"]
+            ).dt.date
+        integer_columns = (
+            "target_demand",
+            "sales_volume",
+            "stock_on_hand",
+            "is_stockout",
+            "supplier_lead_time",
+            "batch_size",
+            "moq",
+            "shelf_life_days",
+            "critical_expiry_days",
+        )
+        for column in integer_columns:
+            if column in df_to_load.columns:
+                df_to_load[column] = (
+                    df_to_load[column].fillna(0).astype(int)
+                )
+        if "safety_threshold" in df_to_load.columns:
+            df_to_load["safety_threshold"] = (
+                df_to_load["safety_threshold"]
+                .fillna(0)
+                .astype(float)
             )
 
-        df_to_load.to_sql(
-            name=table_name,
-            con=engine,
-            if_exists="append",
-            index=False,
+        print(
+            f"⏳ Upserting {len(df_to_load)} records into "
+            f"'{table_name}' (incremental)..."
         )
 
+        # Ensure the natural key exists even on databases created from an
+        # older schema.sql (Alembic migration 0001 also declares it).
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "uq_pharma_store_product_date "
+                    f"ON {table_name} (store_id, product_id, date);"
+                )
+            )
+
+        columns_sql = ", ".join(insert_columns)
+        update_columns = [
+            column
+            for column in insert_columns
+            if column not in key_columns
+        ]
+        update_sql = ", ".join(
+            f"{column} = EXCLUDED.{column}"
+            for column in update_columns
+        )
+        conflict_target = "(store_id, product_id, date)"
+        if update_sql:
+            statement = (
+                f"INSERT INTO {table_name} ({columns_sql}) VALUES %s "
+                f"ON CONFLICT {conflict_target} DO UPDATE SET {update_sql}"
+            )
+        else:
+            statement = (
+                f"INSERT INTO {table_name} ({columns_sql}) VALUES %s "
+                f"ON CONFLICT {conflict_target} DO NOTHING"
+            )
+
+        records = list(
+            df_to_load.itertuples(index=False, name=None)
+        )
+        raw_connection = engine.raw_connection()
+        try:
+            with raw_connection.cursor() as cursor:
+                execute_values(
+                    cursor,
+                    statement,
+                    records,
+                    page_size=1000,
+                )
+            raw_connection.commit()
+        finally:
+            raw_connection.close()
+
         print(
-            f"✅ Success! {len(df_to_load)} rows loaded into '{table_name}' "
-            "without replacing the table definition."
+            f"✅ Success! {len(df_to_load)} rows upserted into "
+            f"'{table_name}'."
         )
         print(
             f"📊 Active stores detected: {df['store_id'].unique().tolist()}"
@@ -219,7 +318,7 @@ def ingest_csv_to_postgres(
             f"💊 Active product catalogues detected: {df['product_id'].unique().tolist()}"
         )
 
-    except SQLAlchemyError as error:
+    except (SQLAlchemyError, psycopg2.Error) as error:
         print(f"❌ Database ingestion error: {error}")
 
 

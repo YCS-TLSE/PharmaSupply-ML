@@ -1,22 +1,36 @@
 """
-Module for generating synthetic dataset for multi-site pharmaceutical demand forecasting.
+===============================================================================
+PharmaSupply-ML: Synthetic Pharmaceutical Demand Generator
+===============================================================================
 
-CONTEXT & PURPOSE:
-------------------
-Due to data privacy restrictions and the lack of immediate access to real-world
-pharmaceutical sales databases during the project setup phase, this script generates
-a realistic 3-year synthetic dataset (1,095 days per store) covering multiple pharmacy
-sites. It includes custom safety thresholds, logistical constraints (batch size, MOQ
-with intentional missing values for robustness testing), and shelf-life parameters
-for comprehensive MLOps validation.
+PURPOSE
+-------
+Generate a realistic multi-site, multi-product daily demand history when real
+pharmaceutical data cannot be shared for privacy or contractual reasons.
 
-TECHNICAL NOTE (FEFO & ERP EVOLUTION):
---------------------------------------
-The introduction of `critical_expiry_days` (tracking the expiration deadline or remaining
-delay of the most urgent batch) acts as a simplified, lightweight structure preparing
-the future FEFO (First Expired, First Out) inventory logic. This design is built as a
-first evolutionary step toward an upcoming external order/ERP connector without
-overcomplicating the current codebase.
+RESPONSIBILITIES
+----------------
+* Simulate trend, seasonality, weekends, stockouts and variable lead times.
+* Assign per-product logistics constraints (batch size, MOQ, shelf life).
+* Inject intentional anomalies and missing values to exercise validation.
+* Simulate the remaining life of the most urgent batch for FEFO logic.
+
+INPUTS / OUTPUTS
+----------------
+Inputs: number of days, products, stores and a random seed.
+Outputs: a DataFrame (and optionally a CSV) with one row per store/product/day.
+
+ARCHITECTURE INTEGRATION
+------------------------
+Consumed by ``run_pipeline.py`` before ingestion. The generated schema matches
+``sql/schema.sql`` and the model feature contract. The dataset is synthetic by
+design; production adapters can replace it without changing downstream code.
+
+OPERATIONAL NOTES
+-----------------
+The random seed makes value generation reproducible, but the date range is
+anchored to ``datetime.now()``, so runs on different days produce different
+calendar indexes. This is intentional for demo freshness.
 """
 
 import logging
@@ -33,6 +47,8 @@ logging.basicConfig(
 )
 
 
+# Main generator. The loops intentionally inject MED_003/MED_008 anomalies and
+# NaN logistics values so the validation gate and alert engine are exercised.
 def build_pharma_dataset(
     days: int = 1095,
     num_products: int = 10,
@@ -197,6 +213,7 @@ def build_pharma_dataset(
     return pd.DataFrame(rows)
 
 
+# CLI entry point: generate the demo dataset and persist it as CSV.
 if __name__ == "__main__":
     logging.info(
         "Generating multi-site 3-year synthetic pharmaceutical dataset..."

@@ -1,2 +1,8 @@
+# =============================================================================
+# Git attributes for PharmaSupply-ML
+# =============================================================================
+# Mark generated artifacts so GitHub collapses them in diffs and reviews,
+# keeping pull requests focused on source-code changes.
+# =============================================================================
 reports/**/*.html linguist-generated=true
 *.ipynb linguist-generated=true

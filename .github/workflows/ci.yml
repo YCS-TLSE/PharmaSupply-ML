@@ -1,0 +1,71 @@
+# =============================================================================
+# PharmaSupply-ML: Continuous Integration
+# =============================================================================
+# Job 1 validates code quality and unit tests with a coverage threshold.
+# Job 2 builds the production images and scans them with Trivy for CRITICAL/HIGH
+# vulnerabilities. Integration tests (Testcontainers) can be run separately
+# with `pytest -m integration` on a Docker-enabled runner.
+# =============================================================================
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  lint-test:
+    name: Lint & unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Ruff enforces syntax, potential bugs and import ordering.
+      - name: Ruff
+        run: ruff check src tests run_pipeline.py
+
+      # Coverage threshold is defined in pyproject.toml (70%).
+      - name: Unit tests with coverage
+        run: pytest -q -m "not integration" --cov=src --cov-report=term-missing
+
+  docker-scan:
+    name: Build images & Trivy scan
+    needs: lint-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Build the two production images with their pinned requirements.
+      - name: Build API image
+        run: docker build -f Dockerfile.api -t pharmasupply-api:${{ github.sha }} .
+      - name: Build dashboard image
+        run: docker build -f Dockerfile.dashboard -t pharmasupply-dashboard:${{ github.sha }} .
+
+      # Fail the build on fixable CRITICAL/HIGH vulnerabilities.
+      - name: Trivy scan API image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: pharmasupply-api:${{ github.sha }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Trivy scan dashboard image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: pharmasupply-dashboard:${{ github.sha }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"

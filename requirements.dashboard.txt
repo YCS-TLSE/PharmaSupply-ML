@@ -1,0 +1,11 @@
+# =============================================================================
+# PharmaSupply-ML: pinned runtime dependencies for the Streamlit dashboard
+# =============================================================================
+# The dashboard is a thin API client: it only needs Streamlit, HTTP requests,
+# pandas for light tabular handling, and python-dotenv to read the same
+# environment file as the API.
+# =============================================================================
+streamlit==1.40.2
+requests==2.32.3
+pandas==1.5.3
+python-dotenv==1.0.1

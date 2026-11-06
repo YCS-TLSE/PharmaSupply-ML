@@ -1,6 +1,17 @@
--- Schema DDL for PharmaSupply-ML (Staging / Raw Data)
--- Designed for a central purchasing and distribution hub with real-world logistical and shelf-life constraints.
+-- =============================================================================
+-- PharmaSupply-ML: staging schema DDL
+-- =============================================================================
+-- Raw pharmaceutical demand table for a central purchasing/distribution hub.
+-- It stores one row per store/product/day and includes logistical constraints
+-- (MOQ, batch size, shelf life) and FEFO critical-expiry tracking.
+--
+-- The natural key (store_id, product_id, date) is enforced by a UNIQUE
+-- constraint so ingestion can perform an incremental UPSERT instead of a
+-- destructive TRUNCATE + APPEND.
+-- =============================================================================
 
+-- Fresh Docker volumes execute this file once. Existing databases should use
+-- Alembic (`alembic upgrade head`) instead.
 DROP TABLE IF EXISTS raw_pharmaceutical_demand CASCADE;
 
 CREATE TABLE raw_pharmaceutical_demand (
@@ -44,9 +55,13 @@ CREATE TABLE raw_pharmaceutical_demand (
     
     -- Expiry constraint: Remaining days before expiration of the most urgent active batch (FEFO preparation)
     critical_expiry_days INT NOT NULL DEFAULT 365,
-    
+
     -- Timestamp recording when the record was ingested into the database
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    -- Natural business key used by incremental UPSERT ingestion
+    CONSTRAINT uq_pharma_store_product_date
+        UNIQUE (store_id, product_id, date)
 );
 
 -- Optimized multi-column index for fast time-series queries across stores and products

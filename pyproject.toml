@@ -1,20 +1,54 @@
+# =============================================================================
+# PharmaSupply-ML: Python tooling configuration
+# =============================================================================
+# This file configures Ruff (linting/import ordering), Pytest (markers and
+# warning filters) and Coverage (scope and minimum threshold). It is not a
+# packaging manifest: the project is executed from the repository root.
+# =============================================================================
+
 [tool.ruff]
+# Match the formatter's default width and the supported Python runtime.
 line-length = 100
 target-version = "py311"
 extend-include = ["*.ipynb"]
 
 [tool.ruff.lint]
-# On garde uniquement les erreurs de syntaxe, de bugs potentiels et le tri des imports
+# Keep syntax errors, potential bugs and deterministic import ordering only.
 select = ["E", "F", "I"]
 
-# Desactivation des regles trop strictes
+# Long lines are allowed in documentation-heavy modules.
 ignore = [
     "E501", # Lignes longues
 ]
 
 [tool.pytest.ini_options]
 filterwarnings = [
-    # Masquer uniquement les warnings venant des dépendances tierces identifiées
+    # Third-party warnings that are not actionable for this project.
     "ignore::DeprecationWarning:starlette.*",
     "ignore::DeprecationWarning:anyio.*",
 ]
+
+# Integration tests require Docker (Testcontainers PostgreSQL). They are
+# excluded from the default unit-test run and executed explicitly in CI.
+markers = [
+    "integration: requires Docker (Testcontainers PostgreSQL)",
+]
+
+[tool.coverage.run]
+# Measure only production code. Alembic templates and package markers are
+# excluded because they contain no runtime logic.
+source = ["src"]
+omit = [
+    "alembic/*",
+    # Streamlit UI is validated through end-to-end/manual runs, not unit tests.
+    "src/dashboard.py",
+    "src/api_routers/__init__.py",
+    "src/repositories/__init__.py",
+    "src/services/__init__.py",
+]
+
+[tool.coverage.report]
+# CI fails if the unit-test suite drops below this engineering threshold.
+fail_under = 70
+show_missing = true
+skip_covered = true

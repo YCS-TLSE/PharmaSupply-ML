@@ -1,8 +1,16 @@
+# =============================================================================
+# PharmaSupply-ML: Conda development environment
+# =============================================================================
+# Reproducible environment used for local development, tests and the ETL/ML
+# pipeline. Production API/dashboard images use the smaller pinned files
+# requirements.api.txt and requirements.dashboard.txt instead.
+# =============================================================================
 name: pharma-supply
 channels:
   - conda-forge
   - defaults
 dependencies:
+  # Runtime language and core data/ML stack managed by conda.
   - python=3.11
   - pandas=1.5.3
   - numpy=1.26.4
@@ -13,17 +21,34 @@ dependencies:
   - scikit-learn=1.5.*
   - shap=0.46.*
   - matplotlib=3.9.*
+
+  # Notebook and test tooling.
   - jupyterlab=4.3.*
   - ipywidgets=8.1.*
   - pytest=8.3.*
+
+  # Pip-managed packages (services, observability, API security, tooling).
   - pip
   - pip:
+      # REST API and contracts.
       - fastapi==0.115.6
       - uvicorn==0.32.1
       - pydantic==2.10.3
       - python-dotenv==1.0.1
+
+      # Drift monitoring, dashboard and HTTP client.
       - evidently==0.7.14
       - streamlit==1.40.2
-      - ruff==0.8.6
       - requests==2.32.3
+
+      # Quality and test tooling.
+      - ruff==0.8.6
       - testcontainers[postgres]
+      - pytest-cov==6.0.0
+      - httpx==0.28.1
+
+      # Database migrations, experiment tracking and observability.
+      - alembic==1.14.0
+      - mlflow==2.19.0
+      - prometheus-client==0.21.1
+      - slowapi==0.1.9

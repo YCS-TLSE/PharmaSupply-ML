@@ -1,25 +1,33 @@
 """
 ===============================================================================
-PharmaSupply-ML: Autonomous Data Validation & Smart Auto-Correction Module
+PharmaSupply-ML: Autonomous Data Validation & Auto-Correction
 ===============================================================================
 
-OBJECTIVE & USAGE:
-------------------
-This script acts as an intelligent Quality Gate for ingested datasets.
-It operates under a dual-mode philosophy:
-1. Hard Fail (Blocking): Stops the pipeline on critical structural corruption
-   (e.g., empty tables, missing mandatory columns).
-2. Soft Auto-Correction (Resilient): Automatically repairs minor anomalies
-   (e.g., negative stock/demand clipped to zero, invalid lead times, thresholds,
-   logistical constraints, or critical expiry days corrected to safe defaults) while logging warnings for transparency.
+PURPOSE
+-------
+Act as a quality gate between raw ingestion and feature engineering. The gate
+distinguishes structural corruption (blocking) from repairable anomalies
+(non-blocking).
 
-TECHNICAL NOTE (FEFO & EXPIRY EVOLUTION):
------------------------------------------
-Supports the lightweight `critical_expiry_days` structure, ensuring smooth fallback
-and auto-correction to prepare downstream FEFO (First Expired, First Out) inventory logic.
+RESPONSIBILITIES
+----------------
+* Hard fail on empty datasets and missing mandatory columns.
+* Impute missing required values with typed defaults.
+* Clamp impossible values (negative stock, demand, sales, lead times).
+* Enforce logistical bounds (batch size, MOQ, shelf life, expiry).
+* Enforce cross-column business rules (sales cannot exceed target demand).
+* Add default values for optional FEFO/logistics columns.
 
-Author: YCS-TLSE
-Project: PharmaSupply-ML
+INPUTS / OUTPUTS
+----------------
+Inputs: a DataFrame from PostgreSQL or an in-memory fixture for tests.
+Outputs: a cleaned DataFrame with stable types and documented defaults.
+
+ARCHITECTURE INTEGRATION
+------------------------
+Used by ``src.train.load_validated_data`` and ``run_pipeline.py``. It is
+intentionally independent from FastAPI so the same rules can be tested and
+reused in batch jobs.
 """
 
 # ==============================================================================
@@ -28,9 +36,18 @@ Project: PharmaSupply-ML
 import pandas as pd
 from sqlalchemy import create_engine, text
 
+from src.config import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_MOQ,
+    DEFAULT_SAFETY_THRESHOLD,
+    DEFAULT_SHELF_LIFE_DAYS,
+    DEFAULT_SUPPLIER_LEAD_TIME,
+)
 from src.db_config import get_database_url
 
 
+# Entry point of the quality gate. ``input_df`` enables fast unit tests without
+# a live database; when omitted, data is read from the staging table.
 def run_validation_and_clean(
     input_df: pd.DataFrame = None,
 ) -> pd.DataFrame:
@@ -100,28 +117,34 @@ def run_validation_and_clean(
         print(
             "ℹ️ Column 'batch_size' absent from table: defaulting to 1 unit."
         )
-        df["batch_size"] = 1
+        df["batch_size"] = DEFAULT_BATCH_SIZE
     else:
         df["batch_size"] = (
-            df["batch_size"].fillna(1).astype(int)
+            df["batch_size"]
+            .fillna(DEFAULT_BATCH_SIZE)
+            .astype(int)
         )
 
     if "moq" not in df.columns:
         print(
             "ℹ️ Column 'moq' absent from table: defaulting to 1 unit."
         )
-        df["moq"] = 1
+        df["moq"] = DEFAULT_MOQ
     else:
-        df["moq"] = df["moq"].fillna(1).astype(int)
+        df["moq"] = (
+            df["moq"].fillna(DEFAULT_MOQ).astype(int)
+        )
 
     if "shelf_life_days" not in df.columns:
         print(
             "ℹ️ Column 'shelf_life_days' absent from table: defaulting to 365 days."
         )
-        df["shelf_life_days"] = 365
+        df["shelf_life_days"] = DEFAULT_SHELF_LIFE_DAYS
     else:
         df["shelf_life_days"] = (
-            df["shelf_life_days"].fillna(365).astype(int)
+            df["shelf_life_days"]
+            .fillna(DEFAULT_SHELF_LIFE_DAYS)
+            .astype(int)
         )
 
     # Fallback & validation for critical expiry tracking (FEFO preparation)
@@ -172,7 +195,7 @@ def run_validation_and_clean(
         df.loc[
             df["supplier_lead_time"] <= 0,
             "supplier_lead_time",
-        ] = 3
+        ] = DEFAULT_SUPPLIER_LEAD_TIME
 
     # Fix invalid safety_threshold (must be positive, default to 150.0 if <= 0)
     invalid_st = (df["safety_threshold"] <= 0).sum()
@@ -182,7 +205,7 @@ def run_validation_and_clean(
         )
         df.loc[
             df["safety_threshold"] <= 0, "safety_threshold"
-        ] = 150.0
+        ] = DEFAULT_SAFETY_THRESHOLD
 
     # Fix invalid batch_size (must be >= 1)
     invalid_bs = (df["batch_size"] < 1).sum()
@@ -190,7 +213,9 @@ def run_validation_and_clean(
         print(
             f"🛠️ Auto-correction: Fixed {invalid_bs} invalid batch sizes (set to default: 1)."
         )
-        df.loc[df["batch_size"] < 1, "batch_size"] = 1
+        df.loc[df["batch_size"] < 1, "batch_size"] = (
+            DEFAULT_BATCH_SIZE
+        )
 
     # Fix invalid moq (must be >= 1)
     invalid_moq = (df["moq"] < 1).sum()
@@ -198,7 +223,7 @@ def run_validation_and_clean(
         print(
             f"🛠️ Auto-correction: Fixed {invalid_moq} invalid MOQ values (set to default: 1)."
         )
-        df.loc[df["moq"] < 1, "moq"] = 1
+        df.loc[df["moq"] < 1, "moq"] = DEFAULT_MOQ
 
     # Fix invalid shelf_life_days (must be >= 1)
     invalid_slf = (df["shelf_life_days"] < 1).sum()
@@ -208,7 +233,7 @@ def run_validation_and_clean(
         )
         df.loc[
             df["shelf_life_days"] < 1, "shelf_life_days"
-        ] = 365
+        ] = DEFAULT_SHELF_LIFE_DAYS
 
     # Fix invalid critical_expiry_days (must be >= 0)
     invalid_ced = (df["critical_expiry_days"] < 0).sum()

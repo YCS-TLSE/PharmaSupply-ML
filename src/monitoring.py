@@ -1,208 +1,303 @@
 """
 ===============================================================================
-PharmaSupply-ML: MLOps Data Drift Monitoring Module
+PharmaSupply-ML: Data Drift Monitoring
 ===============================================================================
 
-OBJECTIVE & USAGE:
-------------------
-This script automates the production drift evaluation pipeline for the demand
-forecasting model. Its sole responsibility is statistical analysis:
-1. Data Ingestion & Splitting: Fetches historical records from PostgreSQL and splits
-   them chronologically into reference (baseline) and current production streams.
-2. Statistical Drift Evaluation: Generates an Evidently AI DataDriftPreset report
-   and extracts column-level drift metrics.
-3. Weighted Criticality Scoring: Multiplies feature-level drift flags by domain/SHAP
-   weights (e.g., lag_7 and stock_on_hand carry higher weights than calendar attributes).
-4. State Persistence: Writes the evaluated raw status string ('STABLE', 'WARNING', or
-   'CRITICAL') into a shared persistence file ('model_status.txt').
+PURPOSE
+-------
+Measure distribution drift and translate it into an operational model status
+consumed by the API health endpoints.
 
-Downstream notifications and user messaging are handled independently by the
-FastAPI serving layer upon consuming this file.
+RESPONSIBILITIES
+----------------
+* Offline mode: compare an 80/20 chronological holdout of historical data.
+* Production mode: compare the reference distribution with aggregated features
+  actually observed on ``/predict`` (JSONL prediction log).
+* Load normalised SHAP weights from ``reports/feature_weights.json``.
+* Compute a weighted drift score and map it to STABLE/WARNING/CRITICAL.
+* Persist the status atomically for the API watcher.
 
-Author: YCS-TLSE
-Project: PharmaSupply-ML
+INPUTS / OUTPUTS
+----------------
+Inputs: feature DataFrames, ``reports/feature_weights.json`` and
+``reports/prediction_log.jsonl``.
+Outputs: Evidently HTML reports and ``model_status.txt``.
+
+ARCHITECTURE INTEGRATION
+------------------------
+Invoked by ``run_pipeline.py`` and batch schedulers. The API only reads the
+resulting status file; it never runs Evidently in the request path.
+
+OPERATIONAL NOTES
+-----------------
+Production drift returns ``UNKNOWN`` until enough prediction samples exist.
+Malformed log lines are skipped so a partial write cannot break the batch.
 """
 
+from __future__ import annotations
+
+import json
 import logging
 import os
 from pathlib import Path
+from typing import Any, Mapping
 
 import pandas as pd
 from evidently import Report
 from evidently.presets import DataDriftPreset
 
+from src.config import (
+    DEFAULT_FEATURE_WEIGHTS,
+    DRIFT_CRITICAL_THRESHOLD,
+    DRIFT_WARNING_THRESHOLD,
+    FEATURE_COLS,
+    FEATURE_WEIGHTS_PATH,
+    PRODUCTION_DRIFT_MIN_SAMPLES,
+    STATUS_FILE_PATH,
+    TARGET_COL,
+)
+from src.observability import read_prediction_log
 from src.train import create_features, load_validated_data
 
-# Configure standard logging format for automated batch executions
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-
-# Feature columns tracked by the forecasting model
-FEATURE_COLS = [
-    "month",
-    "dayofweek",
-    "is_weekend",
-    "stock_on_hand",
-    "supplier_lead_time",
-    "lag_7",
-    "lag_14",
-    "lag_30",
-    "rolling_mean_7",
-    "rolling_mean_30",
-]
-TARGET_COL = "target_demand"
-
-# Path configuration for shared model status persistence across services
-ROOT_DIR = Path(__file__).resolve().parent.parent
-_DEFAULT_STATUS_FILE = ROOT_DIR / "model_status.txt"
-STATUS_FILE_PATH = os.getenv(
-    "STATUS_FILE_PATH",
-    str(_DEFAULT_STATUS_FILE) if _DEFAULT_STATUS_FILE.exists() else "model_status.txt",
-)
-
-# Threshold definitions for the weighted drift score
-WARNING_THRESHOLD = (
-    0.15  # 15% weighted drift -> WARNING status
-)
-CRITICAL_THRESHOLD = (
-    0.30  # 30% weighted drift -> CRITICAL status
-)
+logger = logging.getLogger("pharmasupply.monitoring")
 
 
+# Load the SHAP-derived weights. A missing/corrupt artifact falls back to the
+# documented defaults so monitoring remains operational.
+def load_feature_weights(
+    path: str | Path | None = None,
+) -> dict[str, float]:
+    """Load normalised SHAP weights, falling back to documented defaults."""
+    weights_path = Path(path or FEATURE_WEIGHTS_PATH)
+    if not weights_path.exists():
+        logger.warning(
+            "Feature weights not found at '%s'; using defaults.",
+            weights_path,
+        )
+        return dict(DEFAULT_FEATURE_WEIGHTS)
+
+    try:
+        raw = json.loads(
+            weights_path.read_text(encoding="utf-8")
+        )
+        weights = {
+            str(column): float(weight)
+            for column, weight in raw.items()
+            if str(column) in FEATURE_COLS
+        }
+    except (OSError, ValueError, TypeError) as exc:
+        logger.warning(
+            "Unable to read feature weights (%s); using defaults.",
+            exc,
+        )
+        return dict(DEFAULT_FEATURE_WEIGHTS)
+
+    return weights or dict(DEFAULT_FEATURE_WEIGHTS)
+
+
+# Weighted share of drifting features. Domain-important features (lags, stock)
+# contribute more than calendar attributes.
+def compute_weighted_drift_score(
+    drift_by_column: Mapping[str, Mapping[str, Any]],
+    feature_weights: Mapping[str, float],
+) -> float:
+    """Weighted share of drifting features (0.0 to 1.0)."""
+    total_weight = sum(feature_weights.values())
+    if total_weight <= 0:
+        return 0.0
+
+    drifting_weight = 0.0
+    for column, weight in feature_weights.items():
+        column_info = drift_by_column.get(column) or {}
+        if column_info.get("drift_detected", False):
+            drifting_weight += weight
+    return drifting_weight / total_weight
+
+
+# Threshold mapping centralised so batch and API agree on status semantics.
+def map_drift_status(score: float) -> str:
+    """Map a weighted drift score to an operational status."""
+    if score >= DRIFT_CRITICAL_THRESHOLD:
+        return "CRITICAL"
+    if score >= DRIFT_WARNING_THRESHOLD:
+        return "WARNING"
+    return "STABLE"
+
+
+# Atomic status persistence: write a temporary file then os.replace, so the API
+# can never read a partially written status.
+def _write_status(status_value: str) -> None:
+    """Persist the status atomically so the API never reads a partial file."""
+    status_path = Path(STATUS_FILE_PATH)
+    if status_path.is_dir():
+        raise RuntimeError(
+            f"Status path '{status_path}' is a directory; refusing to "
+            "delete it. Fix STATUS_FILE_PATH."
+        )
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = status_path.with_name(
+        status_path.name + ".tmp"
+    )
+    tmp_path.write_text(status_value, encoding="utf-8")
+    os.replace(tmp_path, status_path)
+
+
+# Evidently stores column-level flags inside a nested metrics dictionary. This
+# helper isolates the fragile parsing and tolerates version differences.
+def _extract_drift_by_column(
+    evaluation: Any,
+) -> dict[str, Any]:
+    """Extract column-level drift flags from an Evidently evaluation."""
+    try:
+        result_dict = (
+            evaluation.as_dict()
+            if hasattr(evaluation, "as_dict")
+            else evaluation.dict()
+        )
+        for metric in result_dict.get("metrics", []):
+            if "DatasetDriftMetric" in metric.get(
+                "metric", ""
+            ):
+                return metric.get("result", {}).get(
+                    "drift_by_columns", {}
+                )
+    except (
+        Exception
+    ) as exc:  # pragma: no cover - Evidently internals
+        logger.warning(
+            "Could not parse column-level drift dictionary: %s",
+            exc,
+        )
+    return {}
+
+
+# Shared Evidently execution: run the preset, optionally save HTML, and return
+# column-level drift flags.
+def _run_report(
+    reference_df: pd.DataFrame,
+    current_df: pd.DataFrame,
+    output_html_path: str | None = None,
+) -> dict[str, Any]:
+    """Run an Evidently DataDriftPreset and optionally save its HTML report."""
+    report = Report(metrics=[DataDriftPreset()])
+    evaluation = report.run(
+        reference_data=reference_df, current_data=current_df
+    )
+
+    if output_html_path:
+        report_path = Path(output_html_path)
+        report_path.parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        target = (
+            evaluation if evaluation is not None else report
+        )
+        if hasattr(target, "save_html"):
+            target.save_html(str(report_path))
+        elif hasattr(target, "save"):
+            target.save(str(report_path))
+
+    return _extract_drift_by_column(
+        evaluation if evaluation is not None else report
+    )
+
+
+# Offline holdout check used by the pipeline as a regression signal.
 def run_drift_monitoring(
     df: pd.DataFrame = None,
     output_html_path: str = "reports/drift_report.html",
 ) -> None:
-    """
-    Executes the data drift evaluation pipeline, computes the weighted criticality
-    score, generates the HTML report, and updates the shared status file.
-
-    Parameters:
-        df (pd.DataFrame, optional): Pre-loaded feature dataframe. If None, fetches from DB.
-        output_html_path (str): File path where the Evidently HTML report will be saved.
-    """
-    # 1. Data Ingestion & Chronological Split
+    """Offline chronological holdout drift check (pipeline regression)."""
     if df is None:
-        logging.info(
+        logger.info(
             "Fetching raw dataset from PostgreSQL database..."
         )
-        df_raw = load_validated_data()
-        df = create_features(df_raw)
+        df = create_features(load_validated_data())
 
     unique_dates = df["date"].sort_values().unique()
     split_idx = int(len(unique_dates) * 0.8)
     split_date = unique_dates[split_idx]
 
+    model_columns = list(FEATURE_COLS) + [TARGET_COL]
     reference_df = df[df["date"] < split_date][
-        FEATURE_COLS + [TARGET_COL]
+        model_columns
     ]
-    current_df = df[df["date"] >= split_date][
-        FEATURE_COLS + [TARGET_COL]
+    current_df = df[df["date"] >= split_date][model_columns]
+
+    drift_by_column = _run_report(
+        reference_df, current_df, output_html_path
+    )
+    score = compute_weighted_drift_score(
+        drift_by_column, load_feature_weights()
+    )
+    status_value = map_drift_status(score)
+    _write_status(status_value)
+
+    logger.info(
+        "Offline drift score: %.1f%% | status: %s | report: %s",
+        score * 100,
+        status_value,
+        output_html_path,
+    )
+
+
+# Production drift: compare live prediction features with the training
+# reference. Returns UNKNOWN when the sample size is insufficient.
+def run_production_drift_monitoring(
+    prediction_log_path: str | Path | None = None,
+    reference_df: pd.DataFrame | None = None,
+    output_html_path: str = "reports/production_drift_report.html",
+) -> str:
+    """Compare live prediction features with the training reference.
+
+    Returns the computed status, or ``UNKNOWN`` when there are not enough
+    production records to make a statistically meaningful comparison.
+    """
+    records = read_prediction_log(prediction_log_path)
+    if len(records) < PRODUCTION_DRIFT_MIN_SAMPLES:
+        logger.warning(
+            "Not enough production records for drift (%d < %d).",
+            len(records),
+            PRODUCTION_DRIFT_MIN_SAMPLES,
+        )
+        return "UNKNOWN"
+
+    current_df = pd.DataFrame(records)
+    missing_columns = [
+        column
+        for column in FEATURE_COLS
+        if column not in current_df.columns
     ]
-
-    # 2. Evidently AI Report Generation
-    logging.info(
-        "Generating Evidently AI comprehensive drift report..."
-    )
-    report = Report(metrics=[DataDriftPreset()])
-    my_eval = report.run(
-        reference_data=reference_df, current_data=current_df
-    )
-
-    report_path = Path(output_html_path)
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-
-    target_obj = my_eval if my_eval is not None else report
-    if hasattr(target_obj, "save_html"):
-        target_obj.save_html(str(report_path))
-    elif hasattr(target_obj, "save"):
-        target_obj.save(str(report_path))
-    elif hasattr(target_obj, "get_html"):
-        with open(report_path, "w", encoding="utf-8") as f:
-            f.write(target_obj.get_html())
-
-    # 3. Feature-Level Drift Extraction
-    try:
-        eval_obj = (
-            my_eval if my_eval is not None else report
+    if missing_columns:
+        raise ValueError(
+            "Prediction log is missing feature columns: "
+            f"{missing_columns}"
         )
-        result_dict = (
-            eval_obj.as_dict()
-            if hasattr(eval_obj, "as_dict")
-            else eval_obj.dict()
-        )
+    current_df = current_df[list(FEATURE_COLS)]
 
-        metrics_list = result_dict.get("metrics", [])
-        drift_by_column = {}
-        for m in metrics_list:
-            if "DatasetDriftMetric" in m.get("metric", ""):
-                drift_by_column = m.get("result", {}).get(
-                    "drift_by_columns", {}
-                )
-                break
-    except Exception as err:
-        logging.warning(
-            f"⚠️ Could not parse column-level drift dictionary: {err}"
-        )
-        drift_by_column = {}
-
-    # 4. Weighted Feature Importance Matrix (SHAP / Domain Business Weights)
-    feature_weights = {
-        "lag_7": 0.25,
-        "stock_on_hand": 0.20,
-        "lag_14": 0.15,
-        "lag_30": 0.10,
-        "rolling_mean_7": 0.10,
-        "rolling_mean_30": 0.10,
-        "supplier_lead_time": 0.05,
-        "month": 0.02,
-        "dayofweek": 0.02,
-        "is_weekend": 0.01,
-    }
-
-    # 5. Weighted Score Calculation
-    total_weighted_drift = 0.0
-    total_weight = sum(feature_weights.values())
-
-    for col, weight in feature_weights.items():
-        col_info = drift_by_column.get(col, {})
-        is_drifting = (
-            1.0
-            if col_info.get("drift_detected", False)
-            else 0.0
-        )
-        total_weighted_drift += is_drifting * weight
-
-    weighted_drift_score = (
-        total_weighted_drift / total_weight
-        if total_weight > 0
-        else 0.0
-    )
-    logging.info(
-        f"Computed weighted drift score: {weighted_drift_score * 100:.1f}%"
-    )
-
-    # 6. Map Score to Operational Status
-    if weighted_drift_score >= CRITICAL_THRESHOLD:
-        status_value = "CRITICAL"
-    elif weighted_drift_score >= WARNING_THRESHOLD:
-        status_value = "WARNING"
+    if reference_df is None:
+        reference_df = create_features(
+            load_validated_data()
+        )[list(FEATURE_COLS)]
     else:
-        status_value = "STABLE"
+        reference_df = reference_df[list(FEATURE_COLS)]
 
-    # 7. Persist State to Disk for API Consumption
-    status_path = Path(STATUS_FILE_PATH)
-    if status_path.is_dir():
-        import shutil
-        shutil.rmtree(status_path)
-    with open(STATUS_FILE_PATH, "w") as f:
-        f.write(status_value)
-
-    logging.info(
-        f"✅ Report saved -> {report_path} | Model Status Evaluated: {status_value}"
+    drift_by_column = _run_report(
+        reference_df, current_df, output_html_path
     )
+    score = compute_weighted_drift_score(
+        drift_by_column, load_feature_weights()
+    )
+    status_value = map_drift_status(score)
+    _write_status(status_value)
+
+    logger.info(
+        "Production drift score: %.1f%% | status: %s | samples: %d",
+        score * 100,
+        status_value,
+        len(current_df),
+    )
+    return status_value
 
 
 if __name__ == "__main__":

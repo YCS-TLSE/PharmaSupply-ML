@@ -1,3 +1,10 @@
+# =============================================================================
+# PharmaSupply-ML: Git exclusions
+# =============================================================================
+# Ignore local environments, caches, secrets, generated data/artifacts and
+# runtime logs. The .env.example template remains tracked.
+# =============================================================================
+
 # Environnements virtuels & Conda
 .venv/
 venv/
@@ -6,6 +13,14 @@ venv/
 # Cache Python
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
 
 # Données locales (CSV, Parquet, bases SQLite locales)
 *.csv
@@ -29,3 +44,10 @@ __pycache__/
 
 # Documentation locale / Notes
 logBook/
+
+# MLflow local tracking store
+mlruns/
+
+# Production drift log (runtime artifact)
+reports/prediction_log.jsonl
+reports/production_drift_report.html

@@ -3,29 +3,32 @@
 PharmaSupply-ML: Master MLOps Pipeline Orchestrator
 ===============================================================================
 
-OBJECTIVE & USAGE:
-------------------
-This master script orchestrates the end-to-end MLOps automation pipeline:
-1. Environment Initialization & Optional Cleanup: Supports modular artifact wiping
-   via '--clean' flag by delegating to 'scripts/clean_artifacts.py'.
-2. Infrastructure Validation: Ensures Docker, PostgreSQL (port 5432), and
-   FastAPI (port 8000) environments are active and reachable.
-3. Ingestion Automation: Systematically regenerates synthetic records from scratch
-   (including custom batch sizes, test anomalies, critical expiry tracking for FEFO,
-   and missing values) and ingests them into the PostgreSQL database.
-4. Autonomous Data Validation & Cleaning: Passes ingested data through the
-   Data Quality Gate (blocking fatal structural errors, auto-correcting minor anomalies
-   and critical expiry constraints).
-5. Feature Engineering: Extracts cleaned data and constructs chronological lag,
-   rolling mean, and calendar variables using the isolated `src.features` module.
-6. Model Training: Trains the XGBoost demand forecasting model and persists
-   the serialized artifact.
-7. Explainability & Weight Export: Generates global/local SHAP interpretability
-   plots and exports normalized feature weights for production monitoring.
-8. Drift Monitoring: Executes Evidently AI data drift analysis using the
-   weighted feature criticality score (`STABLE`, `WARNING`, `CRITICAL`).
-9. REST API & Alerts Verification: Tests the FastAPI `/predict` and `/alerts` endpoints
-   with full logistical and expiry payloads to confirm runtime integrity.
+PURPOSE
+-------
+Run the complete local MLOps lifecycle in a deterministic, fail-fast order:
+infrastructure check, data generation/ingestion, validation, feature
+engineering, training, explainability, drift monitoring and API smoke tests.
+
+RESPONSIBILITIES
+----------------
+* Verify Docker, PostgreSQL and the API; start compose when needed.
+* Regenerate and upsert the synthetic dataset.
+* Run the data quality gate and feature engineering.
+* Train the model, rebuild the API image and wait for readiness.
+* Generate SHAP artifacts and the offline drift report.
+* Exercise `/predict` and `/alerts` with retries to survive startup windows.
+
+INPUTS / OUTPUTS
+----------------
+Inputs: repository files, Docker compose, environment variables.
+Outputs: PostgreSQL rows, model artifact, SHAP figures, drift report, model
+status and a successful API smoke-test exit code.
+
+ARCHITECTURE INTEGRATION
+------------------------
+This is the developer/CI entry point that wires every module together. The
+API is rebuilt (not merely restarted) so new Python dependencies are always
+present, and readiness is confirmed through ``/readyz`` before smoke tests.
 
 Author: YCS-TLSE
 Project: PharmaSupply-ML
@@ -39,12 +42,14 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
 import pandas as pd
 
 from scripts.clean_artifacts import clean_artifacts
+from src.config import API_KEY, API_KEY_HEADER
 from src.data.generate_data import build_pharma_dataset
 from src.explainability import ModelExplainer
 from src.features import create_features
@@ -60,6 +65,14 @@ logging.basicConfig(
 )
 
 
+# Shared authentication header for readiness and smoke-test requests.
+def _auth_headers() -> dict:
+    """Return the API-key header when authentication is enabled."""
+    return {API_KEY_HEADER: API_KEY} if API_KEY else {}
+
+
+# Low-level socket probe used before starting compose. It checks reachability,
+# not application readiness (see wait_for_api_ready).
 def is_port_open(
     host: str, port: int, timeout: float = 2.0
 ) -> bool:
@@ -71,6 +84,80 @@ def is_port_open(
     return is_open
 
 
+# Poll /readyz until the model is loaded and PostgreSQL is reachable. This
+# prevents smoke tests from hitting a container that is still starting.
+def wait_for_api_ready(timeout: int = 90) -> bool:
+    """Wait until the API readiness probe reports model + database ready."""
+    deadline = time.monotonic() + timeout
+    url = "http://localhost:8000/readyz"
+
+    while time.monotonic() < deadline:
+        try:
+            request = urllib.request.Request(
+                url, headers=_auth_headers()
+            )
+            with urllib.request.urlopen(
+                request, timeout=3
+            ) as response:
+                if response.status == 200:
+                    return True
+        except Exception:
+            pass
+        time.sleep(1)
+
+    return False
+
+
+# Retry transient network failures and 5xx responses. 4xx responses are real
+# client errors and fail immediately.
+def _fetch_with_retry(
+    make_request,
+    timeout: int = 10,
+    attempts: int = 6,
+    delay: float = 2.0,
+) -> tuple[int, str]:
+    """Execute an HTTP request, retrying transient connection/5xx errors."""
+    last_error = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(
+                make_request(), timeout=timeout
+            ) as response:
+                return (
+                    response.status,
+                    response.read().decode("utf-8"),
+                )
+        except urllib.error.HTTPError as exc:
+            if exc.code < 500:
+                raise
+            last_error = exc
+        except (
+            urllib.error.URLError,
+            ConnectionError,
+            TimeoutError,
+            OSError,
+        ) as exc:
+            last_error = exc
+
+        logging.warning(
+            "API request attempt %d/%d failed: %s",
+            attempt,
+            attempts,
+            last_error,
+        )
+        if attempt < attempts:
+            time.sleep(delay)
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(
+        "API request failed without a captured error."
+    )
+
+
+# Step 0: best-effort infrastructure startup. The API image itself is rebuilt
+# later, once the new model artifact has been trained.
 def ensure_docker_running() -> None:
     """Verifies PostgreSQL (5432) and FastAPI (8000) availability and attempts auto-start if down."""
     logging.info(
@@ -116,28 +203,53 @@ def ensure_docker_running() -> None:
         sys.exit(1)
 
 
+# Step 3 helper: rebuild the API image so code and dependencies match the
+# repository, then wait for readiness before continuing.
 def reload_api_service() -> None:
-    """Restarts the API container so it reloads the newly trained model joblib file."""
+    """Rebuild and recreate the API container, then wait for readiness.
+
+    A plain ``docker compose restart`` reuses the existing image and therefore
+    cannot pick up new Python dependencies (for example SQLAlchemy introduced
+    by the repository layer). Rebuilding guarantees that the running code and
+    its dependencies match the repository state.
+    """
     logging.info(
-        "Restarting FastAPI service to load updated model artifact..."
+        "Rebuilding and restarting FastAPI service (code + dependencies)..."
     )
     try:
         subprocess.run(
-            ["docker", "compose", "restart", "api"],
+            [
+                "docker",
+                "compose",
+                "up",
+                "-d",
+                "--build",
+                "api",
+            ],
             check=True,
         )
-        time.sleep(2)
-        logging.info(
-            "FastAPI service successfully restarted."
-        )
     except Exception as e:
-        logging.warning(
-            f"Could not restart API container automatically: {e}"
+        logging.error(
+            f"Could not rebuild API container automatically: {e}"
+        )
+        raise RuntimeError(
+            "API image rebuild failed. Check `docker compose logs api`."
+        ) from e
+
+    if not wait_for_api_ready(timeout=120):
+        raise RuntimeError(
+            "FastAPI did not become ready within 120s after rebuild. "
+            "Check `docker compose logs api`."
         )
 
+    logging.info(
+        "FastAPI service successfully rebuilt and ready."
+    )
 
+
+# Step 6: validate inference and alerts through the public HTTP contract.
 def verify_api_serving() -> None:
-    """Tests the API /predict and /alerts endpoints to confirm runtime integrity with FEFO constraints."""
+    """Tests /predict and /alerts, retrying through API startup/reset windows."""
     logging.info(
         "Step 6: Verifying REST API serving inference (/predict) and audit alerts (/alerts)..."
     )
@@ -155,63 +267,68 @@ def verify_api_serving() -> None:
         "moq": 100,
         "shelf_life_days": 365,
         "lag_1": 96.0,
-        "lag_7": 631.0,
-        "lag_14": 1299.0,
-        "lag_30": 2880.0,
+        "lag_7": 96.0,
+        "lag_14": 96.0,
+        "lag_30": 96.0,
+        # Exercise the shared train/serve feature builder.
+        "history": [96.0] * 30,
     }
+    data = json.dumps(payload).encode("utf-8")
 
     try:
         # 1. Test Prediction Endpoint
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url_predict,
-            data=data,
-            headers={"Content-Type": "application/json"},
+        status_code, body = _fetch_with_retry(
+            lambda: urllib.request.Request(
+                url_predict,
+                data=data,
+                headers={
+                    "Content-Type": "application/json",
+                    **_auth_headers(),
+                },
+            )
+        )
+        if status_code != 200:
+            logging.error(
+                "API Predict returned non-200 status code: %s",
+                status_code,
+            )
+            sys.exit(1)
+
+        result = json.loads(body)
+        logging.info(
+            f"API Predict Response Received: Predicted Demand = {result.get('predicted_demand'):.2f} | "
+            f"Reorder Needed = {result.get('reorder_needed')} | Model Status = {result.get('model_status')}"
         )
 
-        with urllib.request.urlopen(
-            req, timeout=5
-        ) as response:
-            if response.status == 200:
-                result = json.loads(
-                    response.read().decode("utf-8")
-                )
-                logging.info(
-                    f"API Predict Response Received: Predicted Demand = {result.get('predicted_demand'):.2f} | "
-                    f"Reorder Needed = {result.get('reorder_needed')} | Model Status = {result.get('model_status')}"
-                )
-            else:
-                logging.error(
-                    f"API Predict returned non-200 status code: {response.status}"
-                )
-                sys.exit(1)
-
         # 2. Test Alerts Endpoint (Audit & FEFO)
-        with urllib.request.urlopen(
-            url_alerts, timeout=5
-        ) as response_alerts:
-            if response_alerts.status == 200:
-                alerts_res = json.loads(
-                    response_alerts.read().decode("utf-8")
-                )
-                logging.info(
-                    f"API Alerts Response Received: Store {alerts_res.get('store_id')} | "
-                    f"Total active alerts = {len(alerts_res.get('alerts', []))}"
-                )
-                logging.info(
-                    "Step 6 SUCCESS: REST API serving and alerts validation completed successfully."
-                )
-            else:
-                logging.error(
-                    f"API Alerts returned non-200 status code: {response_alerts.status}"
-                )
-                sys.exit(1)
+        status_alerts, body_alerts = _fetch_with_retry(
+            lambda: urllib.request.Request(
+                url_alerts, headers=_auth_headers()
+            )
+        )
+        if status_alerts != 200:
+            logging.error(
+                "API Alerts returned non-200 status code: %s",
+                status_alerts,
+            )
+            sys.exit(1)
+
+        alerts_res = json.loads(body_alerts)
+        logging.info(
+            f"API Alerts Response Received: Store {alerts_res.get('store_id')} | "
+            f"Total active alerts = {len(alerts_res.get('alerts', []))}"
+        )
+        logging.info(
+            "Step 6 SUCCESS: REST API serving and alerts validation completed successfully."
+        )
 
     except Exception as e:
         logging.error(f"API Serving test failed: {e}")
         sys.exit(1)
 
 
+# Sequential orchestrator with fail-fast semantics. Each step logs its outcome
+# and exits with a non-zero status on failure so CI can block a bad release.
 def main(clean_first: bool = False) -> None:
     """Executes the full end-to-end MLOps pipeline sequentially with success tracing and fail-fast handling."""
     logging.info(

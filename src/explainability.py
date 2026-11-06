@@ -1,33 +1,32 @@
 """
 ===============================================================================
-Phase 05: Model Explainability & Feature Weight Export Module (PharmaSupply-ML)
+PharmaSupply-ML: Model Explainability & Feature Weight Export
 ===============================================================================
 
-OBJECTIVE & USAGE:
-------------------
-This module provides an industrialization wrapper for model interpretability
-using SHAP (SHapley Additive exPlanations). It serves a dual purpose:
-1. Model Transparency & Reporting: Extracts global feature importance and local
-   prediction justifications for the trained XGBoost demand forecasting model,
-   persisting resulting plots for dashboards and stakeholder audits.
-2. MLOps Monitoring Bridge: Computes mean absolute SHAP values, normalizes them
-   into percentage-based feature importance weights, and exports them to a JSON
-   artifact. This artifact is consumed downstream by 'monitoring.py' to drive
-   weighted data drift calculations.
+PURPOSE
+-------
+Explain the trained XGBoost demand model with SHAP and export normalised
+feature weights consumed by drift monitoring.
 
-Design & Performance Strategy:
-------------------------------
-1. Dynamic Subsampling (Threshold-based):
-   Computing SHAP values on large datasets (> 300 rows) causes visual clutter
-   (overlapping dots in beeswarm plots) and latency bottlenecks in production.
-   This module dynamically subsamples inputs exceeding the threshold.
+RESPONSIBILITIES
+----------------
+* Compute global and local SHAP values with dynamic subsampling.
+* Render beeswarm, bar and individual-breakdown figures.
+* Export the SHAP matrix and normalised mean-|SHAP| weights to JSON.
+* Provide a compatibility patch for XGBoost >= 3 ``base_score`` parsing.
 
-2. Single-Pass vs. Aggregated Multi-Pass Sampling (Cross-Validation Sampling):
-   - n_repeats = 1 (Fast Prod Mode): Uses a deterministic single-draw sample
-     (random_state=42). Provides fast inference (< 0.3s) for REST API and Streamlit.
-   - n_repeats > 1 (Robust Audit Mode): Computes SHAP values across 'n_repeats'
-     independent random samples and averages them. Reduces sampling variance
-     for official reporting and high-precision audit requirements.
+INPUTS / OUTPUTS
+----------------
+Inputs: a joblib model artifact and a feature DataFrame.
+Outputs: PNG figures under ``reports/figures``, ``shap_values.csv`` and
+``feature_weights.json``.
+
+ARCHITECTURE INTEGRATION
+------------------------
+Invoked by ``run_pipeline.py`` after training. ``src.monitoring`` reads the JSON
+weights instead of hard-coding them, closing the explainability → monitoring
+loop. Subsampling keeps production runs fast while allowing multi-pass audit
+mode for higher precision.
 
 Author: YCS-TLSE
 Project: PharmaSupply-ML
@@ -97,6 +96,34 @@ except Exception:
     pass
 
 
+# Pure helper exposed for unit tests: normalise mean absolute SHAP values into
+# weights summing to 1.0. A zero total leaves the raw weights unchanged.
+def normalize_feature_weights(
+    columns,
+    mean_absolute_shap,
+) -> dict[str, float]:
+    """Normalise mean |SHAP| values into weights summing to 1.0.
+
+    Exposed as a pure function so the monitoring bridge can be unit-tested
+    without instantiating SHAP or loading a model artifact.
+    """
+    raw_weights = {
+        str(column): float(value)
+        for column, value in zip(
+            columns, mean_absolute_shap
+        )
+    }
+    total = sum(raw_weights.values())
+    if total <= 0:
+        return raw_weights
+    return {
+        column: value / total
+        for column, value in raw_weights.items()
+    }
+
+
+# Object-oriented wrapper around SHAP. Separating loading, explanation,
+# plotting and export makes each concern independently testable.
 class ModelExplainer:
     """Handles SHAP-based global/local interpretability and automated feature weighting for tree models."""
 
@@ -339,19 +366,8 @@ class ModelExplainer:
         mean_abs_shap = np.mean(
             np.abs(self.shap_values.values), axis=0
         )
-        weights_raw = dict(
-            zip(self.X_sample.columns, mean_abs_shap)
-        )
-
-        # Normalize weights to sum up to 1.0 (percentages for weighted drift calculation)
-        total_shap = sum(weights_raw.values())
-        normalized_weights = (
-            {
-                col: float(val / total_shap)
-                for col, val in weights_raw.items()
-            }
-            if total_shap > 0
-            else weights_raw
+        normalized_weights = normalize_feature_weights(
+            self.X_sample.columns, mean_abs_shap
         )
 
         weights_path = self.output_dir.parent / filename

@@ -1,18 +1,40 @@
+# =============================================================================
+# PharmaSupply-ML: Streamlit Dashboard Image
+# =============================================================================
+# Thin-client image: only Streamlit, requests, pandas and python-dotenv are
+# installed. All business logic and data access remain in the FastAPI service.
+# The container runs as a non-root user and exposes a Streamlit healthcheck.
+# =============================================================================
 FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    STREAMLIT_SERVER_HEADLESS=true \
+    STREAMLIT_SERVER_FILE_WATCHER_TYPE=poll
 
 WORKDIR /app
 
+# curl is only required for the container healthcheck.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir \
-    streamlit \
-    requests \
-    pandas
+# Pinned dashboard dependencies.
+COPY requirements.dashboard.txt ./
+RUN pip install --no-cache-dir -r requirements.dashboard.txt
 
+# The dashboard imports src.config for shared messages/defaults.
 COPY src/ ./src/
 
+RUN useradd --create-home --uid 1000 appuser \
+    && chown -R appuser:appuser /app
+USER appuser
+
 EXPOSE 8501
+
+# Streamlit's built-in health endpoint.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fsS http://localhost:8501/_stcore/health || exit 1
 
 CMD ["streamlit", "run", "src/dashboard.py", "--server.address=0.0.0.0", "--server.port=8501"]
